@@ -9,6 +9,7 @@ class Config:
     CLICKHOUSE_PASSWORD = os.getenv('CLICKHOUSE_PASSWORD', '')
     CLICKHOUSE_DATABASE = os.getenv('CLICKHOUSE_DATABASE', 'solana')
     BATCH_SIZE = int(os.getenv('BATCH_SIZE', '100'))
+    CHUNK_SIZE = int(os.getenv('CHUNK_SIZE', '1000000'))
     LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
     SOLANA_HTTP_RPC_URL = os.getenv('SOLANA_HTTP_RPC_URL')
     METAPLEX_PROGRAM_ID = os.getenv('METAPLEX_PROGRAM_ID', 'metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s')

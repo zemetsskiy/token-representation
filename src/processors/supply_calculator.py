@@ -1,59 +1,80 @@
 import logging
 from typing import List, Dict
+import polars as pl
 from ..database import ClickHouseClient
 logger = logging.getLogger(__name__)
 
 class SupplyCalculator:
     """
-    Batch-optimized supply calculator.
-    Makes exactly 2 database queries total (minted + burned aggregates).
-    All processing happens in memory.
+    Chunk-optimized supply calculator.
+    Makes exactly 2 database queries per chunk (minted + burned aggregates).
+    Uses WHERE IN clause to filter for specific token chunk.
     """
 
     def __init__(self, db_client: ClickHouseClient):
         self.db_client = db_client
 
-    def get_all_supplies_batch(self) -> List[Dict]:
+    def get_supplies_for_chunk(self, token_addresses: List[str]) -> pl.DataFrame:
         """
-        Get supply data for ALL tokens in database using exactly 2 queries.
+        Get supply data for a SPECIFIC CHUNK of tokens using exactly 2 queries.
+        Uses WHERE mint IN (...) to filter results.
+
+        Args:
+            token_addresses: List of token mint addresses to process
 
         Returns:
-            List of dicts with keys: mint, total_minted, total_burned
-            Ready to be converted to Polars DataFrame
+            Polars DataFrame with columns: mint, total_minted, total_burned
         """
-        logger.info('Fetching supply data for all tokens (2 batch queries)')
+        if not token_addresses:
+            return pl.DataFrame({'mint': [], 'total_minted': [], 'total_burned': []})
 
-        # Query 1: Get all minted amounts
-        minted_data = self._get_all_minted()
+        logger.info(f'Fetching supply data for {len(token_addresses)} tokens (2 batch queries)')
+
+        # Query 1: Get minted amounts for this chunk
+        minted_data = self._get_minted_for_chunk(token_addresses)
         logger.info(f'Query 1/2: Retrieved {len(minted_data)} minted records')
 
-        # Query 2: Get all burned amounts
-        burned_data = self._get_all_burned()
+        # Query 2: Get burned amounts for this chunk
+        burned_data = self._get_burned_for_chunk(token_addresses)
         logger.info(f'Query 2/2: Retrieved {len(burned_data)} burned records')
 
-        # Merge in memory (will be done in Polars in main.py)
-        # But provide raw data for flexibility
-        logger.info('Supply data fetched successfully')
+        # Convert to Polars DataFrames
+        df_minted = pl.DataFrame(minted_data) if minted_data else pl.DataFrame({'mint': [], 'total_minted': []})
+        df_burned = pl.DataFrame(burned_data) if burned_data else pl.DataFrame({'mint': [], 'total_burned': []})
 
-        return {
-            'minted': minted_data,
-            'burned': burned_data
-        }
+        # Create base DataFrame with all tokens in chunk
+        df_chunk = pl.DataFrame({'mint': token_addresses})
 
-    def _get_all_minted(self) -> List[Dict]:
+        # Join minted and burned data
+        df_chunk = df_chunk.join(df_minted, on='mint', how='left')
+        df_chunk = df_chunk.join(df_burned, on='mint', how='left')
+
+        # Fill nulls with 0
+        df_chunk = df_chunk.with_columns([
+            pl.col('total_minted').fill_null(0),
+            pl.col('total_burned').fill_null(0)
+        ])
+
+        logger.info(f'Supply data fetched and processed for {len(df_chunk)} tokens')
+        return df_chunk
+
+    def _get_minted_for_chunk(self, token_addresses: List[str]) -> List[Dict]:
         """
-        Single aggregate query for ALL tokens' minted amounts.
-        NO filtering, NO loops.
+        Query minted amounts for specific tokens using WHERE IN clause.
         """
-        query = """
+        # Build WHERE IN clause
+        placeholders = ', '.join([f"'{t}'" for t in token_addresses])
+
+        query = f"""
         SELECT
             mint,
             SUM(amount) AS total_minted
         FROM solana.mints
+        WHERE mint IN ({placeholders})
         GROUP BY mint
         """
 
-        logger.info('Executing minted aggregation for ALL tokens')
+        logger.debug(f'Executing minted aggregation for {len(token_addresses)} tokens')
         try:
             result = self.db_client.execute_query_dict(query)
             return result
@@ -61,20 +82,23 @@ class SupplyCalculator:
             logger.error(f'Failed to get minted amounts: {e}', exc_info=True)
             return []
 
-    def _get_all_burned(self) -> List[Dict]:
+    def _get_burned_for_chunk(self, token_addresses: List[str]) -> List[Dict]:
         """
-        Single aggregate query for ALL tokens' burned amounts.
-        NO filtering, NO loops.
+        Query burned amounts for specific tokens using WHERE IN clause.
         """
-        query = """
+        # Build WHERE IN clause
+        placeholders = ', '.join([f"'{t}'" for t in token_addresses])
+
+        query = f"""
         SELECT
             mint,
             SUM(amount) AS total_burned
         FROM solana.burns
+        WHERE mint IN ({placeholders})
         GROUP BY mint
         """
 
-        logger.info('Executing burned aggregation for ALL tokens')
+        logger.debug(f'Executing burned aggregation for {len(token_addresses)} tokens')
         try:
             result = self.db_client.execute_query_dict(query)
             return result

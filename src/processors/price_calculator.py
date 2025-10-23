@@ -1,5 +1,6 @@
 import logging
 from typing import List, Dict
+import polars as pl
 from ..database import ClickHouseClient
 logger = logging.getLogger(__name__)
 
@@ -13,38 +14,63 @@ STABLECOINS = {
 
 class PriceCalculator:
     """
-    Batch-optimized price calculator.
-    Makes exactly 1 database query to get all latest prices.
-    All processing happens in memory.
+    Chunk-optimized price calculator.
+    Makes exactly 1 database query per chunk to get latest prices.
+    Uses WHERE IN clause to filter for specific token chunk.
     """
 
     def __init__(self, db_client: ClickHouseClient):
         self.db_client = db_client
         self.sol_price_usd = SOL_PRICE_USD
 
-    def get_all_prices_batch(self) -> List[Dict]:
+    def get_prices_for_chunk(self, token_addresses: List[str]) -> pl.DataFrame:
         """
-        Get latest prices for ALL tokens using exactly 1 query.
+        Get latest prices for a SPECIFIC CHUNK of tokens using exactly 1 query.
+        Uses WHERE ... IN (...) to filter results.
+
+        Args:
+            token_addresses: List of token mint addresses to process
 
         Returns:
-            List of dicts with price data ready for Polars DataFrame
-            Keys: token, last_price_in_sol
+            Polars DataFrame with columns: mint, price_in_sol, price_usd
         """
-        logger.info('Fetching prices for all tokens (1 batch query)')
+        if not token_addresses:
+            return pl.DataFrame({'mint': [], 'price_in_sol': [], 'price_usd': []})
 
-        price_data = self._get_all_latest_prices()
+        logger.info(f'Fetching prices for {len(token_addresses)} tokens (1 batch query)')
+
+        price_data = self._get_prices_for_chunk(token_addresses)
         logger.info(f'Query 1/1: Retrieved {len(price_data)} price records')
 
-        logger.info('Prices fetched successfully')
-        return price_data
+        # Convert to Polars DataFrame
+        df_prices = pl.DataFrame(price_data) if price_data else pl.DataFrame({'token': [], 'last_price_in_sol': []})
 
-    def _get_all_latest_prices(self) -> List[Dict]:
-        """
-        Single aggregate query for ALL tokens' latest prices vs SOL.
-        NO filtering, NO loops.
+        # Rename token column to mint for consistency
+        if len(df_prices) > 0:
+            df_prices = df_prices.rename({'token': 'mint', 'last_price_in_sol': 'price_in_sol'})
 
-        Gets the latest price from swaps where one side is SOL.
+        # Create base DataFrame with all tokens in chunk
+        df_chunk = pl.DataFrame({'mint': token_addresses})
+
+        # Join price data
+        df_chunk = df_chunk.join(df_prices, on='mint', how='left')
+
+        # Fill nulls with 0 and calculate USD price
+        df_chunk = df_chunk.with_columns([
+            pl.col('price_in_sol').fill_null(0),
+            (pl.col('price_in_sol').fill_null(0) * SOL_PRICE_USD).alias('price_usd')
+        ])
+
+        logger.info(f'Prices fetched and processed for {len(df_chunk)} tokens')
+        return df_chunk
+
+    def _get_prices_for_chunk(self, token_addresses: List[str]) -> List[Dict]:
         """
+        Query latest prices for specific tokens using WHERE IN clause.
+        """
+        # Build WHERE IN clause
+        placeholders = ', '.join([f"'{t}'" for t in token_addresses])
+
         query = f"""
         SELECT
             token,
@@ -56,7 +82,7 @@ class PriceCalculator:
                 block_time,
                 quote_coin_amount / NULLIF(base_coin_amount, 0) AS price
             FROM solana.swaps
-            WHERE quote_coin = '{SOL_ADDRESS}'
+            WHERE quote_coin = '{SOL_ADDRESS}' AND base_coin IN ({placeholders})
 
             UNION ALL
 
@@ -66,12 +92,12 @@ class PriceCalculator:
                 block_time,
                 base_coin_amount / NULLIF(quote_coin_amount, 0) AS price
             FROM solana.swaps
-            WHERE base_coin = '{SOL_ADDRESS}'
+            WHERE base_coin = '{SOL_ADDRESS}' AND quote_coin IN ({placeholders})
         )
         GROUP BY token
         """
 
-        logger.info('Executing price aggregation for ALL tokens')
+        logger.debug(f'Executing price aggregation for {len(token_addresses)} tokens')
         try:
             result = self.db_client.execute_query_dict(query)
             return result
