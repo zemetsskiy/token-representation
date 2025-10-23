@@ -1,0 +1,37 @@
+services:
+  token-representation:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: token-representation-worker
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    volumes:
+      - ../src:/app/src:ro
+      - ../logs:/app/logs
+    networks:
+      - token-network
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  token-network:
+    driver: bridge
