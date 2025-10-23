@@ -160,7 +160,17 @@ class TokenAggregationWorker:
             ])
             return df_tokens
 
-        df_pools = pl.DataFrame(pool_data)
+        # Create DataFrame with explicit schema to handle large balance values
+        df_pools = pl.DataFrame(
+            pool_data,
+            schema={
+                'canonical_source': pl.Utf8,
+                'base_coin': pl.Utf8,
+                'quote_coin': pl.Utf8,
+                'last_base_balance': pl.Float64,
+                'last_quote_balance': pl.Float64
+            }
+        )
 
         # Calculate liquidity_usd for each pool
         df_pools = df_pools.with_columns([
