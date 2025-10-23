@@ -3,14 +3,18 @@ import json
 from typing import Dict, Optional
 from collections import defaultdict
 from ..database import ClickHouseClient
+
 logger = logging.getLogger(__name__)
-from ..config import config
+
+STABLECOINS = {'USDC': 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', 'USDT': 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB'}
+SOL_ADDRESS = 'So11111111111111111111111111111111111111112'
+SOL_PRICE_USD = 188
 
 class LiquidityAnalyzer:
 
     def __init__(self, db_client: ClickHouseClient):
         self.db_client = db_client
-        self.sol_price_usd = config.SOL_PRICE_USD
+        self.sol_price_usd = SOL_PRICE_USD
 
     def get_best_pool_metrics_batch(self, token_addresses: list, decimals_map: Dict[str, int]) -> Dict[str, dict]:
         if not token_addresses:
@@ -31,13 +35,13 @@ class LiquidityAnalyzer:
             base_balance_norm = float(base_balance_raw) / 10 ** base_decimals
             quote_balance_norm = float(quote_balance_raw) / 10 ** quote_decimals
             liquidity_usd = 0.0
-            if base_coin == config.SOL_ADDRESS:
+            if base_coin == SOL_ADDRESS:
                 liquidity_usd = base_balance_norm * float(self.sol_price_usd) * 2.0
-            elif quote_coin == config.SOL_ADDRESS:
+            elif quote_coin == SOL_ADDRESS:
                 liquidity_usd = quote_balance_norm * float(self.sol_price_usd) * 2.0
-            elif base_coin in config.STABLECOINS.values():
+            elif base_coin in STABLECOINS.values():
                 liquidity_usd = base_balance_norm * 2.0
-            elif quote_coin in config.STABLECOINS.values():
+            elif quote_coin in STABLECOINS.values():
                 liquidity_usd = quote_balance_norm * 2.0
             pool_data = {'source': source, 'base_coin': base_coin, 'quote_coin': quote_coin, 'base_balance_norm': base_balance_norm, 'quote_balance_norm': quote_balance_norm, 'liquidity_usd': liquidity_usd}
             pool_category = 'bonding' if 'bondingcurve' in source.lower() else 'priority'
@@ -71,8 +75,8 @@ class LiquidityAnalyzer:
         if not token_addresses:
             return []
         placeholders = ', '.join([f"'{t}'" for t in token_addresses])
-        usdc = config.STABLECOINS['USDC']
-        usdt = config.STABLECOINS['USDT']
+        usdc = STABLECOINS['USDC']
+        usdt = STABLECOINS['USDT']
         query = f"\n        SELECT\n            CASE\n                WHEN source LIKE 'jupiter6_%' THEN substring(source, 10)\n                WHEN source LIKE 'jupiter4_%' THEN substring(source, 10)\n                WHEN source LIKE 'raydium_route_%' THEN substring(source, 15)\n                ELSE source\n            END AS canonical_source,\n            base_coin,\n            quote_coin,\n            argMax(base_pool_balance_after, block_time) AS last_base_balance,\n            argMax(quote_pool_balance_after, block_time) AS last_quote_balance\n        FROM solana.swaps\n        WHERE\n            (base_coin IN ({placeholders}) AND (quote_coin = '{SOL_ADDRESS}' OR quote_coin IN ('{usdc}','{usdt}')))\n            OR\n            (quote_coin IN ({placeholders}) AND (base_coin = '{SOL_ADDRESS}' OR base_coin IN ('{usdc}','{usdt}')))\n        GROUP BY canonical_source, base_coin, quote_coin\n        HAVING last_base_balance > 0 AND last_quote_balance > 0\n        "
         try:
             result = self.db_client.execute_query(query) or []
