@@ -63,7 +63,9 @@ class ClickHouseClient:
                     self._connect()
                     continue
                 logger.error(f'Query execution failed: {e}', exc_info=True)
-                logger.error(f'Query: {query}')
+                # Log only query summary to avoid massive logs with token lists
+                query_summary = ' '.join((query or '').strip().split()[:10])
+                logger.error(f'Query summary: {query_summary}...')
                 raise
 
     def execute_query_dict(self, query: str, parameters: Optional[Dict[str, Any]]=None) -> List[Dict[str, Any]]:
@@ -98,7 +100,9 @@ class ClickHouseClient:
                     self._connect()
                     continue
                 logger.error(f'Query execution failed: {e}', exc_info=True)
-                logger.error(f'Query: {query}')
+                # Log only query summary to avoid massive logs with token lists
+                query_summary = ' '.join((query or '').strip().split()[:10])
+                logger.error(f'Query summary: {query_summary}...')
                 raise
 
     def execute_batch_insert(self, table: str, data: List[List[Any]], column_names: List[str]):
