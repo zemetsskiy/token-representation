@@ -4,7 +4,6 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
     container_name: token-representation-worker
-    restart: unless-stopped
     env_file:
       - ../.env
     volumes:
