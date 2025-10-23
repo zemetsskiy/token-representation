@@ -252,7 +252,7 @@ class TokenAggregationWorker:
             'largest_lp_pool_usd',
             'first_tx_date',
             'source'
-        ]).head(100)
+        ]).head(10)
 
         print(df_display)
 

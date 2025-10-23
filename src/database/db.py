@@ -22,14 +22,13 @@ class ClickHouseClient:
 
     def _log_query(self, query: str, parameters: Optional[Dict[str, Any]]=None):
         try:
+            # Only log query summary (first 10 words) for brevity
             q = (query or '').strip()
             if q:
-                logger.info('SQL query:\n%s', q)
+                query_summary = ' '.join(q.split()[:10])
+                logger.debug(f'Query: {query_summary}...')
             if parameters:
-                try:
-                    logger.info('SQL parameters: %s', json.dumps(parameters, ensure_ascii=False))
-                except Exception:
-                    logger.info('SQL parameters: %s', parameters)
+                logger.debug(f'Parameters: {len(parameters)} params')
         except Exception as log_err:
             logger.debug(f'Failed to log SQL query: {log_err}')
 
@@ -50,11 +49,11 @@ class ClickHouseClient:
                 result = self.client.query(query, parameters=parameters or {}, settings=settings)
                 rows = result.result_rows
 
-                logger.info(f'Query completed successfully. Returned {len(rows)} rows')
-                if rows and len(rows) <= 5:
-                    logger.info(f'Rows: {rows}')
+                logger.info(f'Query completed: {len(rows):,} rows')
+                if rows and len(rows) <= 3:
+                    logger.debug(f'Sample rows: {rows}')
                 elif rows:
-                    logger.info(f'First 3 rows: {rows[:3]}')
+                    logger.debug(f'Sample (first 3): {rows[:3]}')
 
                 return rows
             except Exception as e:
@@ -85,11 +84,11 @@ class ClickHouseClient:
                 column_names = result.column_names
                 dict_rows = [dict(zip(column_names, row)) for row in result.result_rows]
 
-                logger.info(f'Query completed successfully. Returned {len(dict_rows)} dict rows')
-                if dict_rows and len(dict_rows) <= 5:
-                    logger.info(f'Rows: {dict_rows}')
+                logger.info(f'Query completed: {len(dict_rows):,} rows')
+                if dict_rows and len(dict_rows) <= 3:
+                    logger.debug(f'Sample rows: {dict_rows}')
                 elif dict_rows:
-                    logger.info(f'First 3 rows: {dict_rows[:3]}')
+                    logger.debug(f'Sample (first 3): {dict_rows[:3]}')
 
                 return dict_rows
             except Exception as e:
