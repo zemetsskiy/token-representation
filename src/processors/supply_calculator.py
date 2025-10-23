@@ -82,9 +82,25 @@ class SupplyCalculator:
         logger.info('Executing minted aggregation for all tokens')
         try:
             result = self.db_client.execute_query(query)
-            return {row[0]: int(row[1]) for row in result}
+            logger.info(f'Minted query returned {len(result)} rows')
+
+            # Build dict with proper string handling
+            minted_map: Dict[str, int] = {}
+            for row in result:
+                mint = row[0]
+                # Normalize bytes to string
+                if isinstance(mint, (bytes, bytearray)):
+                    mint = mint.decode('utf-8', errors='ignore').replace('\x00', '').strip()
+                else:
+                    mint = str(mint)
+
+                amount = int(row[1])
+                minted_map[mint] = amount
+
+            logger.info(f'Built minted map with {len(minted_map)} tokens')
+            return minted_map
         except Exception as e:
-            logger.error(f'Failed to get total minted amounts: {e}')
+            logger.error(f'Failed to get total minted amounts: {e}', exc_info=True)
             return {}
 
     def _get_burned_batch(self) -> Dict[str, int]:
@@ -92,7 +108,23 @@ class SupplyCalculator:
         logger.info('Executing burned aggregation for all tokens')
         try:
             result = self.db_client.execute_query(query)
-            return {row[0]: int(row[1]) for row in result}
+            logger.info(f'Burned query returned {len(result)} rows')
+
+            # Build dict with proper string handling
+            burned_map: Dict[str, int] = {}
+            for row in result:
+                mint = row[0]
+                # Normalize bytes to string
+                if isinstance(mint, (bytes, bytearray)):
+                    mint = mint.decode('utf-8', errors='ignore').replace('\x00', '').strip()
+                else:
+                    mint = str(mint)
+
+                amount = int(row[1])
+                burned_map[mint] = amount
+
+            logger.info(f'Built burned map with {len(burned_map)} tokens')
+            return burned_map
         except Exception as e:
-            logger.error(f'Failed to get total burned amounts: {e}')
+            logger.error(f'Failed to get total burned amounts: {e}', exc_info=True)
             return {}

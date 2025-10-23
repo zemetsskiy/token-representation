@@ -56,12 +56,18 @@ class DecimalsResolver:
                         continue
 
                     mint = id_to_mint[response_id]
-                    decimals = self._parse_rpc_response(item)
+                    decimals, account_exists = self._parse_rpc_response(item)
+
                     if decimals is not None:
                         self.decimals_cache[mint] = int(decimals)
                         logger.debug(f'Resolved decimals for {mint[:8]}...: {decimals}')
+                    elif not account_exists:
+                        # Account doesn't exist on chain - this is normal, use default
+                        logger.debug(f'Account does not exist for {mint[:8]}..., defaulting to 6')
+                        self.decimals_cache.setdefault(mint, 6)
                     else:
-                        logger.warning(f'Could not resolve decimals for {mint}, defaulting to 6')
+                        # Account exists but failed to parse - this is unusual
+                        logger.warning(f'Could not parse decimals for {mint}, defaulting to 6')
                         self.decimals_cache.setdefault(mint, 6)
             except requests.exceptions.RequestException as e:
                 logger.error(f'RPC request failed: {e}')
@@ -75,8 +81,22 @@ class DecimalsResolver:
         logger.info(f'Finished resolving decimals. Total cached: {len(self.decimals_cache)}')
         return result
 
-    def _parse_rpc_response(self, item: dict) -> int | None:
+    def _parse_rpc_response(self, item: dict) -> tuple[int | None, bool]:
+        """
+        Parse RPC response for decimals.
+
+        Returns:
+            Tuple of (decimals, account_exists)
+        """
         try:
-            return item['result']['value']['data']['parsed']['info']['decimals']
+            result = item.get('result', {})
+            value = result.get('value')
+
+            # Account doesn't exist on chain
+            if value is None:
+                return (None, False)
+
+            decimals = value['data']['parsed']['info']['decimals']
+            return (decimals, True)
         except Exception:
-            return None
+            return (None, True)  # Exists but failed to parse
