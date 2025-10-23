@@ -28,9 +28,18 @@ class SupplyCalculator:
         if not token_addresses:
             return {}
         logger.info(f'Calculating supply for {len(token_addresses)} tokens (batch mode)')
-        minted_amounts = self._get_minted_batch()
+
+        # Normalize token addresses for filtering
+        normalized_tokens = []
+        for token in token_addresses:
+            t = token.decode('utf-8', errors='ignore') if isinstance(token, (bytes, bytearray)) else str(token)
+            t = t.replace('\x00', '').strip()
+            if t:
+                normalized_tokens.append(t)
+
+        minted_amounts = self._get_minted_batch(normalized_tokens)
         self._last_minted = minted_amounts
-        burned_amounts = self._get_burned_batch()
+        burned_amounts = self._get_burned_batch(normalized_tokens)
         supplies: Dict[str, float] = {}
         for token in token_addresses:
             key = token.decode('utf-8', errors='ignore') if isinstance(token, (bytes, bytearray)) else str(token)
@@ -77,9 +86,20 @@ class SupplyCalculator:
             logger.error(f'Failed to get burned amount for {token_address}: {e}')
             return 0
 
-    def _get_minted_batch(self) -> Dict[str, int]:
-        query = '\n        SELECT mint, SUM(amount) AS total_minted\n        FROM solana.mints\n        GROUP BY mint\n        '
-        logger.info('Executing minted aggregation for all tokens')
+    def _get_minted_batch(self, token_addresses: list) -> Dict[str, int]:
+        if not token_addresses:
+            return {}
+
+        # Build WHERE IN clause for specific tokens only
+        placeholders = ', '.join([f"'{t}'" for t in token_addresses])
+        query = f"""
+        SELECT mint, SUM(amount) AS total_minted
+        FROM solana.mints
+        WHERE mint IN ({placeholders})
+        GROUP BY mint
+        """
+
+        logger.info(f'Executing minted aggregation for {len(token_addresses)} specific tokens')
         try:
             result = self.db_client.execute_query(query)
             logger.info(f'Minted query returned {len(result)} rows')
@@ -103,9 +123,20 @@ class SupplyCalculator:
             logger.error(f'Failed to get total minted amounts: {e}', exc_info=True)
             return {}
 
-    def _get_burned_batch(self) -> Dict[str, int]:
-        query = '\n        SELECT mint, SUM(amount) AS total_burned\n        FROM solana.burns\n        GROUP BY mint\n        '
-        logger.info('Executing burned aggregation for all tokens')
+    def _get_burned_batch(self, token_addresses: list) -> Dict[str, int]:
+        if not token_addresses:
+            return {}
+
+        # Build WHERE IN clause for specific tokens only
+        placeholders = ', '.join([f"'{t}'" for t in token_addresses])
+        query = f"""
+        SELECT mint, SUM(amount) AS total_burned
+        FROM solana.burns
+        WHERE mint IN ({placeholders})
+        GROUP BY mint
+        """
+
+        logger.info(f'Executing burned aggregation for {len(token_addresses)} specific tokens')
         try:
             result = self.db_client.execute_query(query)
             logger.info(f'Burned query returned {len(result)} rows')
