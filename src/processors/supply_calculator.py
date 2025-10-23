@@ -38,9 +38,22 @@ class SupplyCalculator:
         burned_data = self._get_burned_for_chunk(token_addresses)
         logger.info(f'Query 2/2: Retrieved {len(burned_data)} burned records')
 
-        # Convert to Polars DataFrames
-        df_minted = pl.DataFrame(minted_data) if minted_data else pl.DataFrame({'mint': [], 'total_minted': []})
-        df_burned = pl.DataFrame(burned_data) if burned_data else pl.DataFrame({'mint': [], 'total_burned': []})
+        # Convert to Polars DataFrames with explicit schema to handle large integers
+        if minted_data:
+            df_minted = pl.DataFrame(
+                minted_data,
+                schema={'mint': pl.Utf8, 'total_minted': pl.UInt64}
+            )
+        else:
+            df_minted = pl.DataFrame({'mint': [], 'total_minted': []}, schema={'mint': pl.Utf8, 'total_minted': pl.UInt64})
+
+        if burned_data:
+            df_burned = pl.DataFrame(
+                burned_data,
+                schema={'mint': pl.Utf8, 'total_burned': pl.UInt64}
+            )
+        else:
+            df_burned = pl.DataFrame({'mint': [], 'total_burned': []}, schema={'mint': pl.Utf8, 'total_burned': pl.UInt64})
 
         # Create base DataFrame with all tokens in chunk
         df_chunk = pl.DataFrame({'mint': token_addresses})

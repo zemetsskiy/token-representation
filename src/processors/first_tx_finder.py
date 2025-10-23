@@ -38,9 +38,28 @@ class FirstTxFinder:
         first_swaps = self._get_first_swaps_for_chunk(token_addresses)
         logger.info(f'Query 2/2: Retrieved {len(first_swaps)} first swap records')
 
-        # Convert to Polars DataFrames
-        df_first_mints = pl.DataFrame(first_mints) if first_mints else pl.DataFrame({'mint': [], 'first_mint': []})
-        df_first_swaps = pl.DataFrame(first_swaps) if first_swaps else pl.DataFrame({'token': [], 'first_swap': []})
+        # Convert to Polars DataFrames with explicit schema
+        if first_mints:
+            df_first_mints = pl.DataFrame(
+                first_mints,
+                schema={'mint': pl.Utf8, 'first_mint': pl.Datetime}
+            )
+        else:
+            df_first_mints = pl.DataFrame(
+                {'mint': [], 'first_mint': []},
+                schema={'mint': pl.Utf8, 'first_mint': pl.Datetime}
+            )
+
+        if first_swaps:
+            df_first_swaps = pl.DataFrame(
+                first_swaps,
+                schema={'token': pl.Utf8, 'first_swap': pl.Datetime}
+            )
+        else:
+            df_first_swaps = pl.DataFrame(
+                {'token': [], 'first_swap': []},
+                schema={'token': pl.Utf8, 'first_swap': pl.Datetime}
+            )
 
         # Rename token column to mint for consistency
         if len(df_first_swaps) > 0:

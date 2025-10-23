@@ -42,8 +42,17 @@ class PriceCalculator:
         price_data = self._get_prices_for_chunk(token_addresses)
         logger.info(f'Query 1/1: Retrieved {len(price_data)} price records')
 
-        # Convert to Polars DataFrame
-        df_prices = pl.DataFrame(price_data) if price_data else pl.DataFrame({'token': [], 'last_price_in_sol': []})
+        # Convert to Polars DataFrame with explicit schema
+        if price_data:
+            df_prices = pl.DataFrame(
+                price_data,
+                schema={'token': pl.Utf8, 'last_price_in_sol': pl.Float64}
+            )
+        else:
+            df_prices = pl.DataFrame(
+                {'token': [], 'last_price_in_sol': []},
+                schema={'token': pl.Utf8, 'last_price_in_sol': pl.Float64}
+            )
 
         # Rename token column to mint for consistency
         if len(df_prices) > 0:
