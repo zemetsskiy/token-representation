@@ -2,13 +2,20 @@ import logging
 from typing import Dict, Optional
 from ..database import ClickHouseClient
 logger = logging.getLogger(__name__)
-from ..config import config
+
+# Constants
+SOL_ADDRESS = 'So11111111111111111111111111111111111111112'
+SOL_PRICE_USD = 190.0
+STABLECOINS = {
+    'USDC': 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+    'USDT': 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB'
+}
 
 class PriceCalculator:
 
     def __init__(self, db_client: ClickHouseClient):
         self.db_client = db_client
-        self.sol_price_usd = None
+        self.sol_price_usd = SOL_PRICE_USD
 
     def calculate_price(self, token_address: str) -> float:
         try:
@@ -59,7 +66,7 @@ class PriceCalculator:
             return {t: None for t in normalized_tokens}
 
     def _get_sol_price(self) -> float:
-        return config.SOL_PRICE_USD
+        return SOL_PRICE_USD
 
     def get_sol_price(self) -> float:
         if self.sol_price_usd is None:
@@ -87,13 +94,13 @@ class PriceCalculator:
 
     def _estimate_pool_liquidity(self, base_coin: str, quote_coin: str, base_balance: float, quote_balance: float) -> float:
         liquidity = 0.0
-        if base_coin == config.SOL_ADDRESS:
+        if base_coin == SOL_ADDRESS:
             liquidity += base_balance * self.sol_price_usd
-        elif quote_coin == config.SOL_ADDRESS:
+        elif quote_coin == SOL_ADDRESS:
             liquidity += quote_balance * self.sol_price_usd
-        if base_coin in config.STABLECOINS.values():
+        if base_coin in STABLECOINS.values():
             liquidity += base_balance
-        elif quote_coin in config.STABLECOINS.values():
+        elif quote_coin in STABLECOINS.values():
             liquidity += quote_balance
         return liquidity
 
@@ -106,17 +113,17 @@ class PriceCalculator:
             return 0.0
         if base_coin == token_address:
             price_in_quote = quote_amount / base_amount
-            if quote_coin == config.SOL_ADDRESS:
+            if quote_coin == SOL_ADDRESS:
                 return price_in_quote * self.sol_price_usd
-            elif quote_coin in config.STABLECOINS.values():
+            elif quote_coin in STABLECOINS.values():
                 return price_in_quote
             else:
                 return 0.0
         elif quote_coin == token_address:
             price_in_base = base_amount / quote_amount
-            if base_coin == config.SOL_ADDRESS:
+            if base_coin == SOL_ADDRESS:
                 return price_in_base * self.sol_price_usd
-            elif base_coin in config.STABLECOINS.values():
+            elif base_coin in STABLECOINS.values():
                 return price_in_base
             else:
                 return 0.0

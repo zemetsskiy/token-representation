@@ -8,7 +8,7 @@ logger = logging.getLogger(__name__)
 
 STABLECOINS = {'USDC': 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', 'USDT': 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB'}
 SOL_ADDRESS = 'So11111111111111111111111111111111111111112'
-SOL_PRICE_USD = 188
+SOL_PRICE_USD = 190.0
 
 class LiquidityAnalyzer:
 
