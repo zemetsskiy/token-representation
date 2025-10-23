@@ -15,23 +15,26 @@ class FirstTxFinder:
     def __init__(self, db_client: ClickHouseClient):
         self.db_client = db_client
 
-    def get_first_tx_for_chunk(self) -> pl.DataFrame:
+    def get_first_tx_for_chunk(self, first_swaps_data: List[Dict] = None) -> pl.DataFrame:
         """
-        Get first transaction dates for tokens in chunk_tokens temporary table using exactly 2 queries.
-        Uses WHERE IN (SELECT mint FROM chunk_tokens) to filter results.
+        Get first transaction dates for tokens using mint data + provided swap data.
+        Swap data now comes from the consolidated swap query in LiquidityAnalyzer.
+
+        Args:
+            first_swaps_data: Optional list of first swap data from consolidated query
 
         Returns:
             Polars DataFrame with columns: mint, first_tx_date
         """
-        logger.info('Fetching first tx dates from chunk_tokens table (2 batch queries)')
+        logger.info('Fetching first tx dates (mints from DB + swaps from consolidated query)')
 
-        # Query 1: Get first mint date for this chunk
+        # Query: Get first mint date for this chunk (ONLY query to DB)
         first_mints = self._get_first_mints_for_chunk()
-        logger.info(f'Query 1/2: Retrieved {len(first_mints)} first mint records')
+        logger.info(f'Retrieved {len(first_mints)} first mint records')
 
-        # Query 2: Get first swap date for this chunk
-        first_swaps = self._get_first_swaps_for_chunk()
-        logger.info(f'Query 2/2: Retrieved {len(first_swaps)} first swap records')
+        # Use provided swap data (or empty list)
+        first_swaps = first_swaps_data if first_swaps_data else []
+        logger.info(f'Using {len(first_swaps)} first swap records from consolidated query')
 
         # Convert to Polars DataFrames with explicit schema
         if first_mints:
@@ -105,43 +108,3 @@ class FirstTxFinder:
             logger.error(f'Failed to get first mints: {e}', exc_info=True)
             return []
 
-    def _get_first_swaps_for_chunk(self) -> List[Dict]:
-        """
-        Query first swap dates for tokens in temp database chunk_tokens table.
-        Uses UNION ALL to check both base_coin and quote_coin.
-        """
-        temp_db = Config.CLICKHOUSE_TEMP_DATABASE
-        query = f"""
-        SELECT
-            token,
-            MIN(block_time) as first_swap
-        FROM (
-            SELECT base_coin as token, block_time
-            FROM solana.swaps
-            WHERE base_coin IN (SELECT mint FROM {temp_db}.chunk_tokens)
-
-            UNION ALL
-
-            SELECT quote_coin as token, block_time
-            FROM solana.swaps
-            WHERE quote_coin IN (SELECT mint FROM {temp_db}.chunk_tokens)
-        )
-        GROUP BY token
-        """
-
-        logger.debug(f'Executing first swap aggregation from {temp_db}.chunk_tokens table')
-        try:
-            result = self.db_client.execute_query_dict(query)
-            # Decode binary token addresses to strings
-            decoded_result = []
-            for row in result:
-                token_value = row['token']
-                if isinstance(token_value, bytes):
-                    token_str = token_value.decode('utf-8').rstrip('\x00')
-                else:
-                    token_str = str(token_value).rstrip('\x00')
-                decoded_result.append({'token': token_str, 'first_swap': row['first_swap']})
-            return decoded_result
-        except Exception as e:
-            logger.error(f'Failed to get first swaps: {e}', exc_info=True)
-            return []

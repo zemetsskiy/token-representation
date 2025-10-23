@@ -24,18 +24,22 @@ class PriceCalculator:
         self.db_client = db_client
         self.sol_price_usd = SOL_PRICE_USD
 
-    def get_prices_for_chunk(self) -> pl.DataFrame:
+    def get_prices_for_chunk(self, price_data: List[Dict] = None) -> pl.DataFrame:
         """
-        Get latest prices for tokens in chunk_tokens temporary table using exactly 1 query.
-        Uses WHERE IN (SELECT mint FROM chunk_tokens) to filter results.
+        Process price data (provided from consolidated swap query).
+        No longer queries the database - uses pre-fetched data.
+
+        Args:
+            price_data: List of price data from consolidated query
 
         Returns:
             Polars DataFrame with columns: mint, price_in_sol, price_usd
         """
-        logger.info('Fetching prices from chunk_tokens table (1 batch query)')
+        logger.info('Processing prices from consolidated swap query')
 
-        price_data = self._get_prices_for_chunk()
-        logger.info(f'Query 1/1: Retrieved {len(price_data)} price records')
+        # Use provided data (or empty list)
+        price_data = price_data if price_data else []
+        logger.info(f'Using {len(price_data)} price records from consolidated query')
 
         # Convert to Polars DataFrame with explicit schema
         if price_data:
@@ -61,54 +65,6 @@ class PriceCalculator:
 
         logger.info(f'Prices fetched and processed for {len(df_prices)} tokens')
         return df_prices
-
-    def _get_prices_for_chunk(self) -> List[Dict]:
-        """
-        Query latest prices for tokens in temp database chunk_tokens table.
-        """
-        temp_db = Config.CLICKHOUSE_TEMP_DATABASE
-        query = f"""
-        SELECT
-            token,
-            argMax(price, block_time) AS last_price_in_sol
-        FROM (
-            -- token is base vs SOL
-            SELECT
-                base_coin AS token,
-                block_time,
-                quote_coin_amount / NULLIF(base_coin_amount, 0) AS price
-            FROM solana.swaps
-            WHERE quote_coin = '{SOL_ADDRESS}' AND base_coin IN (SELECT mint FROM {temp_db}.chunk_tokens)
-
-            UNION ALL
-
-            -- token is quote vs SOL
-            SELECT
-                quote_coin AS token,
-                block_time,
-                base_coin_amount / NULLIF(quote_coin_amount, 0) AS price
-            FROM solana.swaps
-            WHERE base_coin = '{SOL_ADDRESS}' AND quote_coin IN (SELECT mint FROM {temp_db}.chunk_tokens)
-        )
-        GROUP BY token
-        """
-
-        logger.debug(f'Executing price aggregation from {temp_db}.chunk_tokens table')
-        try:
-            result = self.db_client.execute_query_dict(query)
-            # Decode binary token addresses to strings
-            decoded_result = []
-            for row in result:
-                token_value = row['token']
-                if isinstance(token_value, bytes):
-                    token_str = token_value.decode('utf-8').rstrip('\x00')
-                else:
-                    token_str = str(token_value).rstrip('\x00')
-                decoded_result.append({'token': token_str, 'last_price_in_sol': row['last_price_in_sol']})
-            return decoded_result
-        except Exception as e:
-            logger.error(f'Failed to get prices: {e}', exc_info=True)
-            return []
 
     def get_sol_price(self) -> float:
         """Return current SOL price in USD."""
