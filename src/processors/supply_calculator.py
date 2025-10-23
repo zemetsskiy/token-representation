@@ -77,7 +77,16 @@ class SupplyCalculator:
         logger.debug(f'Executing minted aggregation for {len(token_addresses)} tokens')
         try:
             result = self.db_client.execute_query_dict(query)
-            return result
+            # Decode binary mint addresses to strings
+            decoded_result = []
+            for row in result:
+                mint_value = row['mint']
+                if isinstance(mint_value, bytes):
+                    mint_str = mint_value.decode('utf-8').rstrip('\x00')
+                else:
+                    mint_str = str(mint_value).rstrip('\x00')
+                decoded_result.append({'mint': mint_str, 'total_minted': row['total_minted']})
+            return decoded_result
         except Exception as e:
             logger.error(f'Failed to get minted amounts: {e}', exc_info=True)
             return []
@@ -101,7 +110,16 @@ class SupplyCalculator:
         logger.debug(f'Executing burned aggregation for {len(token_addresses)} tokens')
         try:
             result = self.db_client.execute_query_dict(query)
-            return result
+            # Decode binary mint addresses to strings
+            decoded_result = []
+            for row in result:
+                mint_value = row['mint']
+                if isinstance(mint_value, bytes):
+                    mint_str = mint_value.decode('utf-8').rstrip('\x00')
+                else:
+                    mint_str = str(mint_value).rstrip('\x00')
+                decoded_result.append({'mint': mint_str, 'total_burned': row['total_burned']})
+            return decoded_result
         except Exception as e:
             logger.error(f'Failed to get burned amounts: {e}', exc_info=True)
             return []

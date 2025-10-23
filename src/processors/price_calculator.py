@@ -100,7 +100,16 @@ class PriceCalculator:
         logger.debug(f'Executing price aggregation for {len(token_addresses)} tokens')
         try:
             result = self.db_client.execute_query_dict(query)
-            return result
+            # Decode binary token addresses to strings
+            decoded_result = []
+            for row in result:
+                token_value = row['token']
+                if isinstance(token_value, bytes):
+                    token_str = token_value.decode('utf-8').rstrip('\x00')
+                else:
+                    token_str = str(token_value).rstrip('\x00')
+                decoded_result.append({'token': token_str, 'last_price_in_sol': row['last_price_in_sol']})
+            return decoded_result
         except Exception as e:
             logger.error(f'Failed to get prices: {e}', exc_info=True)
             return []

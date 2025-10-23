@@ -85,7 +85,30 @@ class LiquidityAnalyzer:
         logger.debug(f'Executing pool aggregation for {len(token_addresses)} tokens')
         try:
             result = self.db_client.execute_query_dict(query)
-            return result
+            # Decode binary token addresses to strings
+            decoded_result = []
+            for row in result:
+                base_coin_value = row['base_coin']
+                quote_coin_value = row['quote_coin']
+
+                if isinstance(base_coin_value, bytes):
+                    base_coin_str = base_coin_value.decode('utf-8').rstrip('\x00')
+                else:
+                    base_coin_str = str(base_coin_value).rstrip('\x00')
+
+                if isinstance(quote_coin_value, bytes):
+                    quote_coin_str = quote_coin_value.decode('utf-8').rstrip('\x00')
+                else:
+                    quote_coin_str = str(quote_coin_value).rstrip('\x00')
+
+                decoded_result.append({
+                    'canonical_source': row['canonical_source'],
+                    'base_coin': base_coin_str,
+                    'quote_coin': quote_coin_str,
+                    'last_base_balance': row['last_base_balance'],
+                    'last_quote_balance': row['last_quote_balance']
+                })
+            return decoded_result
         except Exception as e:
             logger.error(f'Failed to get pool metrics: {e}', exc_info=True)
             return []

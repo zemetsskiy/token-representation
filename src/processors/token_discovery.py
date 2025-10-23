@@ -18,7 +18,7 @@ class TokenDiscovery:
         NO LIMIT - processes full dataset.
 
         Returns:
-            List of dicts with 'mint' key, ready for Polars DataFrame
+            List of dicts with 'mint' key (as strings), ready for Polars DataFrame
         """
         query = """
         SELECT DISTINCT mint
@@ -30,8 +30,20 @@ class TokenDiscovery:
         logger.info('Discovering ALL token mints (no limit)')
         try:
             result = self.db_client.execute_query_dict(query)
-            logger.info(f'Discovered {len(result)} total mints')
-            return result
+
+            # Decode binary mint addresses to strings and strip null bytes
+            decoded_result = []
+            for row in result:
+                mint_value = row['mint']
+                if isinstance(mint_value, bytes):
+                    # Decode bytes and strip null bytes
+                    mint_str = mint_value.decode('utf-8').rstrip('\x00')
+                else:
+                    mint_str = str(mint_value).rstrip('\x00')
+                decoded_result.append({'mint': mint_str})
+
+            logger.info(f'Discovered {len(decoded_result)} total mints')
+            return decoded_result
         except Exception as e:
             logger.error(f'Failed to discover mints: {e}', exc_info=True)
             return []

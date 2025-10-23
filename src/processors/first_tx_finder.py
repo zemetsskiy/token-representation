@@ -83,7 +83,16 @@ class FirstTxFinder:
         logger.debug(f'Executing first mint aggregation for {len(token_addresses)} tokens')
         try:
             result = self.db_client.execute_query_dict(query)
-            return result
+            # Decode binary mint addresses to strings
+            decoded_result = []
+            for row in result:
+                mint_value = row['mint']
+                if isinstance(mint_value, bytes):
+                    mint_str = mint_value.decode('utf-8').rstrip('\x00')
+                else:
+                    mint_str = str(mint_value).rstrip('\x00')
+                decoded_result.append({'mint': mint_str, 'first_mint': row['first_mint']})
+            return decoded_result
         except Exception as e:
             logger.error(f'Failed to get first mints: {e}', exc_info=True)
             return []
@@ -117,7 +126,16 @@ class FirstTxFinder:
         logger.debug(f'Executing first swap aggregation for {len(token_addresses)} tokens')
         try:
             result = self.db_client.execute_query_dict(query)
-            return result
+            # Decode binary token addresses to strings
+            decoded_result = []
+            for row in result:
+                token_value = row['token']
+                if isinstance(token_value, bytes):
+                    token_str = token_value.decode('utf-8').rstrip('\x00')
+                else:
+                    token_str = str(token_value).rstrip('\x00')
+                decoded_result.append({'token': token_str, 'first_swap': row['first_swap']})
+            return decoded_result
         except Exception as e:
             logger.error(f'Failed to get first swaps: {e}', exc_info=True)
             return []
