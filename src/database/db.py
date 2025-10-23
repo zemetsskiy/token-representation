@@ -1,0 +1,123 @@
+import logging
+import json
+from typing import List, Dict, Any, Optional
+from uuid import uuid4
+import clickhouse_connect
+from ..config import Config
+logger = logging.getLogger(__name__)
+
+class ClickHouseClient:
+
+    def __init__(self):
+        self.client = None
+        self._connect()
+
+    def _connect(self):
+        try:
+            self.client = clickhouse_connect.get_client(host=Config.CLICKHOUSE_HOST, port=Config.CLICKHOUSE_PORT, username=Config.CLICKHOUSE_USER, password=Config.CLICKHOUSE_PASSWORD, database=Config.CLICKHOUSE_DATABASE)
+            logger.info(f'Connected to ClickHouse at {Config.CLICKHOUSE_HOST}:{Config.CLICKHOUSE_PORT}')
+        except Exception as e:
+            logger.error(f'Failed to connect to ClickHouse: {e}')
+            raise
+
+    def _log_query(self, query: str, parameters: Optional[Dict[str, Any]]=None):
+        try:
+            q = (query or '').strip()
+            if q:
+                logger.info('SQL query:\n%s', q)
+            if parameters:
+                try:
+                    logger.info('SQL parameters: %s', json.dumps(parameters, ensure_ascii=False))
+                except Exception:
+                    logger.info('SQL parameters: %s', parameters)
+        except Exception as log_err:
+            logger.debug(f'Failed to log SQL query: {log_err}')
+
+    def execute_query(self, query: str, parameters: Optional[Dict[str, Any]]=None) -> List[tuple]:
+        attempts = 2
+        for attempt in range(attempts):
+            try:
+                self._log_query(query, parameters)
+                settings = {'session_id': str(uuid4()), 'session_timeout': 60}
+                result = self.client.query(query, parameters=parameters or {}, settings=settings)
+                rows = result.result_rows
+                logger.debug(f'Query returned {len(rows)} rows')
+                if rows:
+                    logger.debug(f'Sample rows: {rows[:3]}')
+                return rows
+            except Exception as e:
+                msg = str(e)
+                if ('SESSION_IS_LOCKED' in msg or 'code: 373' in msg) and attempt < attempts - 1:
+                    logger.warning('Session locked, reconnecting and retrying query...')
+                    self._connect()
+                    continue
+                logger.error(f'Query execution failed: {e}')
+                logger.error(f'Query: {query}')
+                raise
+
+    def execute_query_dict(self, query: str, parameters: Optional[Dict[str, Any]]=None) -> List[Dict[str, Any]]:
+        attempts = 2
+        for attempt in range(attempts):
+            try:
+                self._log_query(query, parameters)
+                settings = {'session_id': str(uuid4()), 'session_timeout': 60}
+                result = self.client.query(query, parameters=parameters or {}, settings=settings)
+                column_names = result.column_names
+                dict_rows = [dict(zip(column_names, row)) for row in result.result_rows]
+                logger.debug(f'Query returned {len(dict_rows)} dict rows')
+                if dict_rows:
+                    logger.debug(f'Sample dict rows: {dict_rows[:3]}')
+                return dict_rows
+            except Exception as e:
+                msg = str(e)
+                if ('SESSION_IS_LOCKED' in msg or 'code: 373' in msg) and attempt < attempts - 1:
+                    logger.warning('Session locked, reconnecting and retrying query (dict)...')
+                    self._connect()
+                    continue
+                logger.error(f'Query execution failed: {e}')
+                logger.error(f'Query: {query}')
+                raise
+
+    def execute_batch_insert(self, table: str, data: List[List[Any]], column_names: List[str]):
+        try:
+            if not data:
+                logger.warning(f'No data to insert into {table}')
+                return
+            logger.info(f'Inserting {len(data)} rows into {table}')
+            self.client.insert(table=table, data=data, column_names=column_names)
+            logger.info(f'Successfully inserted {len(data)} rows into {table}')
+        except Exception as e:
+            logger.error(f'Batch insert failed: {e}')
+            logger.error(f'Table: {table}, Rows: {len(data)}')
+            raise
+
+    def create_token_metrics_table(self):
+        query = "\n        CREATE TABLE IF NOT EXISTS solana.token_metrics (\n            token_address FixedString(48),\n            blockchain String,\n            symbol Nullable(String),\n            name Nullable(String),\n            price_usd Float64,\n            market_cap_usd Float64,\n            supply UInt64,\n            largest_lp_pool_usd Float64,\n            first_tx_date DateTime('UTC')\n        )\n        ENGINE = MergeTree()\n        ORDER BY token_address\n        "
+        attempts = 2
+        for attempt in range(attempts):
+            try:
+                self._log_query(query)
+                settings = {'session_id': str(uuid4()), 'session_timeout': 60}
+                self.client.command(query)
+                logger.info('token_metrics table created or already exists')
+                return
+            except Exception as e:
+                msg = str(e)
+                if ('SESSION_IS_LOCKED' in msg or 'code: 373' in msg) and attempt < attempts - 1:
+                    logger.warning('Session locked on command, reconnecting and retrying...')
+                    self._connect()
+                    continue
+                logger.error(f'Failed to create token_metrics table: {e}')
+                raise
+
+    def close(self):
+        if self.client:
+            self.client.close()
+            logger.info('ClickHouse connection closed')
+_db_client = None
+
+def get_db_client() -> ClickHouseClient:
+    global _db_client
+    if _db_client is None:
+        _db_client = ClickHouseClient()
+    return _db_client
