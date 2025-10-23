@@ -14,28 +14,22 @@ class FirstTxFinder:
     def __init__(self, db_client: ClickHouseClient):
         self.db_client = db_client
 
-    def get_first_tx_for_chunk(self, token_addresses: List[str]) -> pl.DataFrame:
+    def get_first_tx_for_chunk(self) -> pl.DataFrame:
         """
-        Get first transaction dates for a SPECIFIC CHUNK of tokens using exactly 2 queries.
-        Uses WHERE IN (...) to filter results.
-
-        Args:
-            token_addresses: List of token mint addresses to process
+        Get first transaction dates for tokens in chunk_tokens temporary table using exactly 2 queries.
+        Uses WHERE IN (SELECT mint FROM chunk_tokens) to filter results.
 
         Returns:
             Polars DataFrame with columns: mint, first_tx_date
         """
-        if not token_addresses:
-            return pl.DataFrame({'mint': [], 'first_tx_date': []})
-
-        logger.info(f'Fetching first tx dates for {len(token_addresses)} tokens (2 batch queries)')
+        logger.info('Fetching first tx dates from chunk_tokens table (2 batch queries)')
 
         # Query 1: Get first mint date for this chunk
-        first_mints = self._get_first_mints_for_chunk(token_addresses)
+        first_mints = self._get_first_mints_for_chunk()
         logger.info(f'Query 1/2: Retrieved {len(first_mints)} first mint records')
 
         # Query 2: Get first swap date for this chunk
-        first_swaps = self._get_first_swaps_for_chunk(token_addresses)
+        first_swaps = self._get_first_swaps_for_chunk()
         logger.info(f'Query 2/2: Retrieved {len(first_swaps)} first swap records')
 
         # Convert to Polars DataFrames with explicit schema
@@ -65,12 +59,8 @@ class FirstTxFinder:
         if len(df_first_swaps) > 0:
             df_first_swaps = df_first_swaps.rename({'token': 'mint'})
 
-        # Create base DataFrame with all tokens in chunk
-        df_chunk = pl.DataFrame({'mint': token_addresses})
-
         # Join first tx dates
-        df_chunk = df_chunk.join(df_first_mints, on='mint', how='left')
-        df_chunk = df_chunk.join(df_first_swaps, on='mint', how='left')
+        df_chunk = df_first_mints.join(df_first_swaps, on='mint', how='outer')
 
         # Calculate earliest date between mint and swap
         df_chunk = df_chunk.with_columns([
@@ -83,23 +73,20 @@ class FirstTxFinder:
         logger.info(f'First tx dates fetched and processed for {len(df_chunk)} tokens')
         return df_chunk
 
-    def _get_first_mints_for_chunk(self, token_addresses: List[str]) -> List[Dict]:
+    def _get_first_mints_for_chunk(self) -> List[Dict]:
         """
-        Query first mint dates for specific tokens using WHERE IN clause.
+        Query first mint dates for tokens in chunk_tokens temporary table.
         """
-        # Build WHERE IN clause
-        placeholders = ', '.join([f"'{t}'" for t in token_addresses])
-
-        query = f"""
+        query = """
         SELECT
             mint,
             MIN(block_time) as first_mint
         FROM solana.mints
-        WHERE mint IN ({placeholders})
+        WHERE mint IN (SELECT mint FROM chunk_tokens)
         GROUP BY mint
         """
 
-        logger.debug(f'Executing first mint aggregation for {len(token_addresses)} tokens')
+        logger.debug('Executing first mint aggregation from chunk_tokens table')
         try:
             result = self.db_client.execute_query_dict(query)
             # Decode binary mint addresses to strings
@@ -116,33 +103,30 @@ class FirstTxFinder:
             logger.error(f'Failed to get first mints: {e}', exc_info=True)
             return []
 
-    def _get_first_swaps_for_chunk(self, token_addresses: List[str]) -> List[Dict]:
+    def _get_first_swaps_for_chunk(self) -> List[Dict]:
         """
-        Query first swap dates for specific tokens using WHERE IN clause.
+        Query first swap dates for tokens in chunk_tokens temporary table.
         Uses UNION ALL to check both base_coin and quote_coin.
         """
-        # Build WHERE IN clause
-        placeholders = ', '.join([f"'{t}'" for t in token_addresses])
-
-        query = f"""
+        query = """
         SELECT
             token,
             MIN(block_time) as first_swap
         FROM (
             SELECT base_coin as token, block_time
             FROM solana.swaps
-            WHERE base_coin IN ({placeholders})
+            WHERE base_coin IN (SELECT mint FROM chunk_tokens)
 
             UNION ALL
 
             SELECT quote_coin as token, block_time
             FROM solana.swaps
-            WHERE quote_coin IN ({placeholders})
+            WHERE quote_coin IN (SELECT mint FROM chunk_tokens)
         )
         GROUP BY token
         """
 
-        logger.debug(f'Executing first swap aggregation for {len(token_addresses)} tokens')
+        logger.debug('Executing first swap aggregation from chunk_tokens table')
         try:
             result = self.db_client.execute_query_dict(query)
             # Decode binary token addresses to strings

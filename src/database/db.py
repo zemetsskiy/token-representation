@@ -141,6 +141,37 @@ class ClickHouseClient:
                 logger.error(f'Failed to create token_metrics table: {e}', exc_info=True)
                 raise
 
+    def manage_chunk_table(self, table_name: str, data: List[List[Any]], column_names: List[str]):
+        """
+        Recreates and populates a temporary table for a chunk of data.
+        This is the canonical ClickHouse approach for filtering large datasets.
+
+        Args:
+            table_name: Name of the temporary table (e.g., 'chunk_tokens')
+            data: List of tuples/lists with data to insert
+            column_names: Column names for the table
+        """
+        try:
+            # Drop table if exists (safe even if it doesn't exist)
+            drop_query = f"DROP TABLE IF EXISTS {table_name}"
+            self.client.command(drop_query)
+            logger.debug(f"Dropped temporary table '{table_name}' if it existed")
+
+            # Create temporary table (ENGINE = Memory for fast in-memory operations)
+            columns_def = ', '.join([f"{col} String" for col in column_names])
+            create_query = f"CREATE TEMPORARY TABLE {table_name} ({columns_def}) ENGINE = Memory"
+            self.client.command(create_query)
+            logger.debug(f"Created temporary table '{table_name}'")
+
+            # Insert data into temporary table
+            logger.info(f"Uploading {len(data):,} rows to temporary table '{table_name}'...")
+            self.client.insert(table_name, data, column_names=column_names)
+            logger.info(f"Successfully uploaded data to '{table_name}'")
+
+        except Exception as e:
+            logger.error(f"Failed to manage temporary table '{table_name}': {e}", exc_info=True)
+            raise
+
     def close(self):
         if self.client:
             self.client.close()

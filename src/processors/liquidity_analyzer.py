@@ -23,39 +23,30 @@ class LiquidityAnalyzer:
         self.db_client = db_client
         self.sol_price_usd = SOL_PRICE_USD
 
-    def get_pool_metrics_for_chunk(self, token_addresses: List[str]) -> List[Dict]:
+    def get_pool_metrics_for_chunk(self) -> List[Dict]:
         """
-        Get pool metrics for a SPECIFIC CHUNK of tokens using exactly 1 query.
-        Uses WHERE ... IN (...) to filter results for tokens in chunk.
-
-        Args:
-            token_addresses: List of token mint addresses to process
+        Get pool metrics for tokens in chunk_tokens temporary table using exactly 1 query.
+        Uses WHERE IN (SELECT mint FROM chunk_tokens) to filter results for tokens in chunk.
 
         Returns:
             List of dicts with pool data ready for Polars DataFrame
             Keys: canonical_source, base_coin, quote_coin, last_base_balance, last_quote_balance
         """
-        if not token_addresses:
-            return []
+        logger.info('Fetching pool metrics from chunk_tokens table (1 batch query)')
 
-        logger.info(f'Fetching pool metrics for {len(token_addresses)} tokens (1 batch query)')
-
-        pool_data = self._get_pools_for_chunk(token_addresses)
+        pool_data = self._get_pools_for_chunk()
         logger.info(f'Query 1/1: Retrieved {len(pool_data)} pool records')
 
         logger.info('Pool metrics fetched successfully')
         return pool_data
 
-    def _get_pools_for_chunk(self, token_addresses: List[str]) -> List[Dict]:
+    def _get_pools_for_chunk(self) -> List[Dict]:
         """
-        Query pool data for specific tokens using WHERE IN clause.
-        Filters for pools where base_coin OR quote_coin is in the token list.
+        Query pool data for tokens in chunk_tokens temporary table.
+        Filters for pools where base_coin OR quote_coin is in the chunk_tokens table.
         """
         usdc = STABLECOINS['USDC']
         usdt = STABLECOINS['USDT']
-
-        # Build WHERE IN clause for token filtering
-        placeholders = ', '.join([f"'{t}'" for t in token_addresses])
 
         query = f"""
         SELECT
@@ -77,12 +68,12 @@ class LiquidityAnalyzer:
                 (base_coin = '{SOL_ADDRESS}' OR base_coin IN ('{usdc}', '{usdt}'))
             )
             AND
-            (base_coin IN ({placeholders}) OR quote_coin IN ({placeholders}))
+            (base_coin IN (SELECT mint FROM chunk_tokens) OR quote_coin IN (SELECT mint FROM chunk_tokens))
         GROUP BY canonical_source, base_coin, quote_coin
         HAVING last_base_balance > 0 AND last_quote_balance > 0
         """
 
-        logger.debug(f'Executing pool aggregation for {len(token_addresses)} tokens')
+        logger.debug('Executing pool aggregation from chunk_tokens table')
         try:
             result = self.db_client.execute_query_dict(query)
             # Decode binary token addresses to strings

@@ -23,23 +23,17 @@ class PriceCalculator:
         self.db_client = db_client
         self.sol_price_usd = SOL_PRICE_USD
 
-    def get_prices_for_chunk(self, token_addresses: List[str]) -> pl.DataFrame:
+    def get_prices_for_chunk(self) -> pl.DataFrame:
         """
-        Get latest prices for a SPECIFIC CHUNK of tokens using exactly 1 query.
-        Uses WHERE ... IN (...) to filter results.
-
-        Args:
-            token_addresses: List of token mint addresses to process
+        Get latest prices for tokens in chunk_tokens temporary table using exactly 1 query.
+        Uses WHERE IN (SELECT mint FROM chunk_tokens) to filter results.
 
         Returns:
             Polars DataFrame with columns: mint, price_in_sol, price_usd
         """
-        if not token_addresses:
-            return pl.DataFrame({'mint': [], 'price_in_sol': [], 'price_usd': []})
+        logger.info('Fetching prices from chunk_tokens table (1 batch query)')
 
-        logger.info(f'Fetching prices for {len(token_addresses)} tokens (1 batch query)')
-
-        price_data = self._get_prices_for_chunk(token_addresses)
+        price_data = self._get_prices_for_chunk()
         logger.info(f'Query 1/1: Retrieved {len(price_data)} price records')
 
         # Convert to Polars DataFrame with explicit schema
@@ -58,28 +52,19 @@ class PriceCalculator:
         if len(df_prices) > 0:
             df_prices = df_prices.rename({'token': 'mint', 'last_price_in_sol': 'price_in_sol'})
 
-        # Create base DataFrame with all tokens in chunk
-        df_chunk = pl.DataFrame({'mint': token_addresses})
-
-        # Join price data
-        df_chunk = df_chunk.join(df_prices, on='mint', how='left')
-
         # Fill nulls with 0 and calculate USD price
-        df_chunk = df_chunk.with_columns([
+        df_prices = df_prices.with_columns([
             pl.col('price_in_sol').fill_null(0),
             (pl.col('price_in_sol').fill_null(0) * SOL_PRICE_USD).alias('price_usd')
         ])
 
-        logger.info(f'Prices fetched and processed for {len(df_chunk)} tokens')
-        return df_chunk
+        logger.info(f'Prices fetched and processed for {len(df_prices)} tokens')
+        return df_prices
 
-    def _get_prices_for_chunk(self, token_addresses: List[str]) -> List[Dict]:
+    def _get_prices_for_chunk(self) -> List[Dict]:
         """
-        Query latest prices for specific tokens using WHERE IN clause.
+        Query latest prices for tokens in chunk_tokens temporary table.
         """
-        # Build WHERE IN clause
-        placeholders = ', '.join([f"'{t}'" for t in token_addresses])
-
         query = f"""
         SELECT
             token,
@@ -91,7 +76,7 @@ class PriceCalculator:
                 block_time,
                 quote_coin_amount / NULLIF(base_coin_amount, 0) AS price
             FROM solana.swaps
-            WHERE quote_coin = '{SOL_ADDRESS}' AND base_coin IN ({placeholders})
+            WHERE quote_coin = '{SOL_ADDRESS}' AND base_coin IN (SELECT mint FROM chunk_tokens)
 
             UNION ALL
 
@@ -101,12 +86,12 @@ class PriceCalculator:
                 block_time,
                 base_coin_amount / NULLIF(quote_coin_amount, 0) AS price
             FROM solana.swaps
-            WHERE base_coin = '{SOL_ADDRESS}' AND quote_coin IN ({placeholders})
+            WHERE base_coin = '{SOL_ADDRESS}' AND quote_coin IN (SELECT mint FROM chunk_tokens)
         )
         GROUP BY token
         """
 
-        logger.debug(f'Executing price aggregation for {len(token_addresses)} tokens')
+        logger.debug('Executing price aggregation from chunk_tokens table')
         try:
             result = self.db_client.execute_query_dict(query)
             # Decode binary token addresses to strings

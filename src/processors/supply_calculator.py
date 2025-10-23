@@ -14,28 +14,22 @@ class SupplyCalculator:
     def __init__(self, db_client: ClickHouseClient):
         self.db_client = db_client
 
-    def get_supplies_for_chunk(self, token_addresses: List[str]) -> pl.DataFrame:
+    def get_supplies_for_chunk(self) -> pl.DataFrame:
         """
-        Get supply data for a SPECIFIC CHUNK of tokens using exactly 2 queries.
-        Uses WHERE mint IN (...) to filter results.
-
-        Args:
-            token_addresses: List of token mint addresses to process
+        Get supply data for tokens in the temporary 'chunk_tokens' table using exactly 2 queries.
+        Uses WHERE mint IN (SELECT mint FROM chunk_tokens) to filter results.
 
         Returns:
             Polars DataFrame with columns: mint, total_minted, total_burned
         """
-        if not token_addresses:
-            return pl.DataFrame({'mint': [], 'total_minted': [], 'total_burned': []})
-
-        logger.info(f'Fetching supply data for {len(token_addresses)} tokens (2 batch queries)')
+        logger.info('Fetching supply data from chunk_tokens table (2 batch queries)')
 
         # Query 1: Get minted amounts for this chunk
-        minted_data = self._get_minted_for_chunk(token_addresses)
+        minted_data = self._get_minted_for_chunk()
         logger.info(f'Query 1/2: Retrieved {len(minted_data)} minted records')
 
         # Query 2: Get burned amounts for this chunk
-        burned_data = self._get_burned_for_chunk(token_addresses)
+        burned_data = self._get_burned_for_chunk()
         logger.info(f'Query 2/2: Retrieved {len(burned_data)} burned records')
 
         # Convert to Polars DataFrames with explicit schema to handle large integers
@@ -55,12 +49,8 @@ class SupplyCalculator:
         else:
             df_burned = pl.DataFrame({'mint': [], 'total_burned': []}, schema={'mint': pl.Utf8, 'total_burned': pl.UInt64})
 
-        # Create base DataFrame with all tokens in chunk
-        df_chunk = pl.DataFrame({'mint': token_addresses})
-
         # Join minted and burned data
-        df_chunk = df_chunk.join(df_minted, on='mint', how='left')
-        df_chunk = df_chunk.join(df_burned, on='mint', how='left')
+        df_chunk = df_minted.join(df_burned, on='mint', how='outer')
 
         # Fill nulls with 0
         df_chunk = df_chunk.with_columns([
@@ -71,23 +61,20 @@ class SupplyCalculator:
         logger.info(f'Supply data fetched and processed for {len(df_chunk)} tokens')
         return df_chunk
 
-    def _get_minted_for_chunk(self, token_addresses: List[str]) -> List[Dict]:
+    def _get_minted_for_chunk(self) -> List[Dict]:
         """
-        Query minted amounts for specific tokens using WHERE IN clause.
+        Query minted amounts for tokens in chunk_tokens temporary table.
         """
-        # Build WHERE IN clause
-        placeholders = ', '.join([f"'{t}'" for t in token_addresses])
-
-        query = f"""
+        query = """
         SELECT
             mint,
             SUM(amount) AS total_minted
         FROM solana.mints
-        WHERE mint IN ({placeholders})
+        WHERE mint IN (SELECT mint FROM chunk_tokens)
         GROUP BY mint
         """
 
-        logger.debug(f'Executing minted aggregation for {len(token_addresses)} tokens')
+        logger.debug('Executing minted aggregation from chunk_tokens table')
         try:
             result = self.db_client.execute_query_dict(query)
             # Decode binary mint addresses to strings
@@ -104,23 +91,20 @@ class SupplyCalculator:
             logger.error(f'Failed to get minted amounts: {e}', exc_info=True)
             return []
 
-    def _get_burned_for_chunk(self, token_addresses: List[str]) -> List[Dict]:
+    def _get_burned_for_chunk(self) -> List[Dict]:
         """
-        Query burned amounts for specific tokens using WHERE IN clause.
+        Query burned amounts for tokens in chunk_tokens temporary table.
         """
-        # Build WHERE IN clause
-        placeholders = ', '.join([f"'{t}'" for t in token_addresses])
-
-        query = f"""
+        query = """
         SELECT
             mint,
             SUM(amount) AS total_burned
         FROM solana.burns
-        WHERE mint IN ({placeholders})
+        WHERE mint IN (SELECT mint FROM chunk_tokens)
         GROUP BY mint
         """
 
-        logger.debug(f'Executing burned aggregation for {len(token_addresses)} tokens')
+        logger.debug('Executing burned aggregation from chunk_tokens table')
         try:
             result = self.db_client.execute_query_dict(query)
             # Decode binary mint addresses to strings

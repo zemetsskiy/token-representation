@@ -112,30 +112,36 @@ class TokenAggregationWorker:
 
     def _process_chunk(self, chunk_mints: list, chunk_num: int) -> pl.DataFrame:
         """
-        Process a single chunk of tokens.
+        Process a single chunk of tokens using temporary table approach.
         Makes 6 database queries per chunk (supply: 2, first_tx: 2, pools: 1, prices: 1).
         """
+        # Step 1: Upload chunk to temporary table
+        logger.info(f'  [{chunk_num}] Uploading {len(chunk_mints):,} tokens to temporary table...')
+        temp_table_name = 'chunk_tokens'
+        chunk_data_for_upload = [[mint] for mint in chunk_mints]  # List of lists
+        self.db_client.manage_chunk_table(temp_table_name, chunk_data_for_upload, column_names=['mint'])
+
         # Create base DataFrame
         df_chunk = pl.DataFrame({'mint': chunk_mints})
 
-        # Fetch supply data (2 queries)
+        # Step 2: Fetch supply data (2 queries) - processors now use temp table
         logger.info(f'  [{chunk_num}] Fetching supply data...')
-        df_supply = self.supply_calculator.get_supplies_for_chunk(chunk_mints)
+        df_supply = self.supply_calculator.get_supplies_for_chunk()
         df_chunk = df_chunk.join(df_supply, on='mint', how='left')
 
-        # Fetch first tx dates (2 queries)
+        # Step 3: Fetch first tx dates (2 queries)
         logger.info(f'  [{chunk_num}] Fetching first tx dates...')
-        df_first_tx = self.first_tx_finder.get_first_tx_for_chunk(chunk_mints)
+        df_first_tx = self.first_tx_finder.get_first_tx_for_chunk()
         df_chunk = df_chunk.join(df_first_tx, on='mint', how='left')
 
-        # Fetch prices (1 query)
+        # Step 4: Fetch prices (1 query)
         logger.info(f'  [{chunk_num}] Fetching prices...')
-        df_prices = self.price_calculator.get_prices_for_chunk(chunk_mints)
+        df_prices = self.price_calculator.get_prices_for_chunk()
         df_chunk = df_chunk.join(df_prices, on='mint', how='left')
 
-        # Fetch pool metrics (1 query)
+        # Step 5: Fetch pool metrics (1 query)
         logger.info(f'  [{chunk_num}] Fetching pool metrics...')
-        pool_data = self.liquidity_analyzer.get_pool_metrics_for_chunk(chunk_mints)
+        pool_data = self.liquidity_analyzer.get_pool_metrics_for_chunk()
         df_chunk = self._process_pools_and_metrics(df_chunk, pool_data, chunk_num)
 
         return df_chunk
