@@ -38,12 +38,24 @@ class ClickHouseClient:
         for attempt in range(attempts):
             try:
                 self._log_query(query, parameters)
-                settings = {'session_id': str(uuid4()), 'session_timeout': 60}
+                logger.info('Executing query...')
+
+                # Increase timeout for large aggregation queries
+                settings = {
+                    'session_id': str(uuid4()),
+                    'session_timeout': 300,  # 5 minutes
+                    'max_execution_time': 300  # 5 minutes query execution
+                }
+
                 result = self.client.query(query, parameters=parameters or {}, settings=settings)
                 rows = result.result_rows
-                logger.debug(f'Query returned {len(rows)} rows')
-                if rows:
-                    logger.debug(f'Sample rows: {rows[:3]}')
+
+                logger.info(f'Query completed successfully. Returned {len(rows)} rows')
+                if rows and len(rows) <= 5:
+                    logger.info(f'Rows: {rows}')
+                elif rows:
+                    logger.info(f'First 3 rows: {rows[:3]}')
+
                 return rows
             except Exception as e:
                 msg = str(e)
@@ -51,7 +63,7 @@ class ClickHouseClient:
                     logger.warning('Session locked, reconnecting and retrying query...')
                     self._connect()
                     continue
-                logger.error(f'Query execution failed: {e}')
+                logger.error(f'Query execution failed: {e}', exc_info=True)
                 logger.error(f'Query: {query}')
                 raise
 
@@ -60,13 +72,25 @@ class ClickHouseClient:
         for attempt in range(attempts):
             try:
                 self._log_query(query, parameters)
-                settings = {'session_id': str(uuid4()), 'session_timeout': 60}
+                logger.info('Executing query (dict)...')
+
+                # Increase timeout for large aggregation queries
+                settings = {
+                    'session_id': str(uuid4()),
+                    'session_timeout': 300,  # 5 minutes
+                    'max_execution_time': 300  # 5 minutes query execution
+                }
+
                 result = self.client.query(query, parameters=parameters or {}, settings=settings)
                 column_names = result.column_names
                 dict_rows = [dict(zip(column_names, row)) for row in result.result_rows]
-                logger.debug(f'Query returned {len(dict_rows)} dict rows')
-                if dict_rows:
-                    logger.debug(f'Sample dict rows: {dict_rows[:3]}')
+
+                logger.info(f'Query completed successfully. Returned {len(dict_rows)} dict rows')
+                if dict_rows and len(dict_rows) <= 5:
+                    logger.info(f'Rows: {dict_rows}')
+                elif dict_rows:
+                    logger.info(f'First 3 rows: {dict_rows[:3]}')
+
                 return dict_rows
             except Exception as e:
                 msg = str(e)
@@ -74,7 +98,7 @@ class ClickHouseClient:
                     logger.warning('Session locked, reconnecting and retrying query (dict)...')
                     self._connect()
                     continue
-                logger.error(f'Query execution failed: {e}')
+                logger.error(f'Query execution failed: {e}', exc_info=True)
                 logger.error(f'Query: {query}')
                 raise
 
@@ -97,7 +121,11 @@ class ClickHouseClient:
         for attempt in range(attempts):
             try:
                 self._log_query(query)
-                settings = {'session_id': str(uuid4()), 'session_timeout': 60}
+                settings = {
+                    'session_id': str(uuid4()),
+                    'session_timeout': 300,  # 5 minutes
+                    'max_execution_time': 300
+                }
                 self.client.command(query)
                 logger.info('token_metrics table created or already exists')
                 return
@@ -107,7 +135,7 @@ class ClickHouseClient:
                     logger.warning('Session locked on command, reconnecting and retrying...')
                     self._connect()
                     continue
-                logger.error(f'Failed to create token_metrics table: {e}')
+                logger.error(f'Failed to create token_metrics table: {e}', exc_info=True)
                 raise
 
     def close(self):
