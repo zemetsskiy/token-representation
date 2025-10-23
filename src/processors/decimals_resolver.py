@@ -25,18 +25,41 @@ class DecimalsResolver:
         batch_size = 500
         for i in range(0, len(normalized), batch_size):
             batch = normalized[i:i + batch_size]
-            payload = [{'jsonrpc': '2.0', 'id': idx + 1, 'method': 'getAccountInfo', 'params': [mint, {'encoding': 'jsonParsed'}]} for idx, mint in enumerate(batch)]
+
+            # Create mapping from id to mint address
+            id_to_mint = {}
+            payload = []
+            for idx, mint in enumerate(batch):
+                request_id = idx + 1
+                id_to_mint[request_id] = mint
+                payload.append({
+                    'jsonrpc': '2.0',
+                    'id': request_id,
+                    'method': 'getAccountInfo',
+                    'params': [mint, {'encoding': 'jsonParsed'}]
+                })
+
             try:
                 resp = requests.post(self.rpc_url, json=payload, timeout=30)
                 resp.raise_for_status()
                 results = resp.json()
+
+                # Handle single response wrapped in dict
                 if isinstance(results, dict) and 'result' in results:
                     results = [results]
-                for idx, item in enumerate(results):
-                    mint = batch[idx]
+
+                # Match responses by 'id' field (responses may be out of order)
+                for item in results:
+                    response_id = item.get('id')
+                    if response_id is None or response_id not in id_to_mint:
+                        logger.debug(f'Received response with unexpected id: {response_id}')
+                        continue
+
+                    mint = id_to_mint[response_id]
                     decimals = self._parse_rpc_response(item)
                     if decimals is not None:
                         self.decimals_cache[mint] = int(decimals)
+                        logger.debug(f'Resolved decimals for {mint[:8]}...: {decimals}')
                     else:
                         logger.warning(f'Could not resolve decimals for {mint}, defaulting to 6')
                         self.decimals_cache.setdefault(mint, 6)
