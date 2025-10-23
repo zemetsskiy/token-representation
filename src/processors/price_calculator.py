@@ -2,6 +2,7 @@ import logging
 from typing import List, Dict
 import polars as pl
 from ..database import ClickHouseClient
+from ..config import Config
 logger = logging.getLogger(__name__)
 
 # Constants
@@ -63,8 +64,9 @@ class PriceCalculator:
 
     def _get_prices_for_chunk(self) -> List[Dict]:
         """
-        Query latest prices for tokens in chunk_tokens temporary table.
+        Query latest prices for tokens in temp database chunk_tokens table.
         """
+        temp_db = Config.CLICKHOUSE_TEMP_DATABASE
         query = f"""
         SELECT
             token,
@@ -76,7 +78,7 @@ class PriceCalculator:
                 block_time,
                 quote_coin_amount / NULLIF(base_coin_amount, 0) AS price
             FROM solana.swaps
-            WHERE quote_coin = '{SOL_ADDRESS}' AND base_coin IN (SELECT mint FROM chunk_tokens)
+            WHERE quote_coin = '{SOL_ADDRESS}' AND base_coin IN (SELECT mint FROM {temp_db}.chunk_tokens)
 
             UNION ALL
 
@@ -86,12 +88,12 @@ class PriceCalculator:
                 block_time,
                 base_coin_amount / NULLIF(quote_coin_amount, 0) AS price
             FROM solana.swaps
-            WHERE base_coin = '{SOL_ADDRESS}' AND quote_coin IN (SELECT mint FROM chunk_tokens)
+            WHERE base_coin = '{SOL_ADDRESS}' AND quote_coin IN (SELECT mint FROM {temp_db}.chunk_tokens)
         )
         GROUP BY token
         """
 
-        logger.debug('Executing price aggregation from chunk_tokens table')
+        logger.debug(f'Executing price aggregation from {temp_db}.chunk_tokens table')
         try:
             result = self.db_client.execute_query_dict(query)
             # Decode binary token addresses to strings

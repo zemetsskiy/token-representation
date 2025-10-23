@@ -2,6 +2,7 @@ import logging
 from typing import List, Dict
 import polars as pl
 from ..database import ClickHouseClient
+from ..config import Config
 logger = logging.getLogger(__name__)
 
 class SupplyCalculator:
@@ -63,18 +64,19 @@ class SupplyCalculator:
 
     def _get_minted_for_chunk(self) -> List[Dict]:
         """
-        Query minted amounts for tokens in chunk_tokens temporary table.
+        Query minted amounts for tokens in temp database chunk_tokens table.
         """
-        query = """
+        temp_db = Config.CLICKHOUSE_TEMP_DATABASE
+        query = f"""
         SELECT
             mint,
             SUM(amount) AS total_minted
         FROM solana.mints
-        WHERE mint IN (SELECT mint FROM chunk_tokens)
+        WHERE mint IN (SELECT mint FROM {temp_db}.chunk_tokens)
         GROUP BY mint
         """
 
-        logger.debug('Executing minted aggregation from chunk_tokens table')
+        logger.debug(f'Executing minted aggregation from {temp_db}.chunk_tokens table')
         try:
             result = self.db_client.execute_query_dict(query)
             # Decode binary mint addresses to strings
@@ -93,18 +95,19 @@ class SupplyCalculator:
 
     def _get_burned_for_chunk(self) -> List[Dict]:
         """
-        Query burned amounts for tokens in chunk_tokens temporary table.
+        Query burned amounts for tokens in temp database chunk_tokens table.
         """
-        query = """
+        temp_db = Config.CLICKHOUSE_TEMP_DATABASE
+        query = f"""
         SELECT
             mint,
             SUM(amount) AS total_burned
         FROM solana.burns
-        WHERE mint IN (SELECT mint FROM chunk_tokens)
+        WHERE mint IN (SELECT mint FROM {temp_db}.chunk_tokens)
         GROUP BY mint
         """
 
-        logger.debug('Executing burned aggregation from chunk_tokens table')
+        logger.debug(f'Executing burned aggregation from {temp_db}.chunk_tokens table')
         try:
             result = self.db_client.execute_query_dict(query)
             # Decode binary mint addresses to strings

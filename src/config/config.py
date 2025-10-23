@@ -8,6 +8,7 @@ class Config:
     CLICKHOUSE_USER = os.getenv('CLICKHOUSE_USER', 'default')
     CLICKHOUSE_PASSWORD = os.getenv('CLICKHOUSE_PASSWORD', '')
     CLICKHOUSE_DATABASE = os.getenv('CLICKHOUSE_DATABASE', 'solana')
+    CLICKHOUSE_TEMP_DATABASE = os.getenv('CLICKHOUSE_TEMP_DATABASE', 'temp_processing')
     BATCH_SIZE = int(os.getenv('BATCH_SIZE', '100'))
     CHUNK_SIZE = int(os.getenv('CHUNK_SIZE', '1000000'))
     LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')

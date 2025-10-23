@@ -2,6 +2,7 @@ import logging
 from typing import List, Dict
 import polars as pl
 from ..database import ClickHouseClient
+from ..config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -42,11 +43,12 @@ class LiquidityAnalyzer:
 
     def _get_pools_for_chunk(self) -> List[Dict]:
         """
-        Query pool data for tokens in chunk_tokens temporary table.
-        Filters for pools where base_coin OR quote_coin is in the chunk_tokens table.
+        Query pool data for tokens in temp database chunk_tokens table.
+        Filters for pools where base_coin OR quote_coin is in the temp database chunk_tokens table.
         """
         usdc = STABLECOINS['USDC']
         usdt = STABLECOINS['USDT']
+        temp_db = Config.CLICKHOUSE_TEMP_DATABASE
 
         query = f"""
         SELECT
@@ -68,12 +70,12 @@ class LiquidityAnalyzer:
                 (base_coin = '{SOL_ADDRESS}' OR base_coin IN ('{usdc}', '{usdt}'))
             )
             AND
-            (base_coin IN (SELECT mint FROM chunk_tokens) OR quote_coin IN (SELECT mint FROM chunk_tokens))
+            (base_coin IN (SELECT mint FROM {temp_db}.chunk_tokens) OR quote_coin IN (SELECT mint FROM {temp_db}.chunk_tokens))
         GROUP BY canonical_source, base_coin, quote_coin
         HAVING last_base_balance > 0 AND last_quote_balance > 0
         """
 
-        logger.debug('Executing pool aggregation from chunk_tokens table')
+        logger.debug(f'Executing pool aggregation from {temp_db}.chunk_tokens table')
         try:
             result = self.db_client.execute_query_dict(query)
             # Decode binary token addresses to strings

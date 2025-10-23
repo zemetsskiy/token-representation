@@ -10,7 +10,9 @@ class ClickHouseClient:
 
     def __init__(self):
         self.client = None
+        self.temp_database = Config.CLICKHOUSE_TEMP_DATABASE
         self._connect()
+        self._ensure_temp_database()
 
     def _connect(self):
         try:
@@ -18,6 +20,19 @@ class ClickHouseClient:
             logger.info(f'Connected to ClickHouse at {Config.CLICKHOUSE_HOST}:{Config.CLICKHOUSE_PORT}')
         except Exception as e:
             logger.error(f'Failed to connect to ClickHouse: {e}')
+            raise
+
+    def _ensure_temp_database(self):
+        """
+        Create temporary database if it doesn't exist.
+        This database will be used exclusively for temporary tables during chunk processing.
+        """
+        try:
+            create_db_query = f"CREATE DATABASE IF NOT EXISTS {self.temp_database}"
+            self.client.command(create_db_query)
+            logger.info(f"Temporary database '{self.temp_database}' is ready")
+        except Exception as e:
+            logger.error(f"Failed to create temporary database '{self.temp_database}': {e}", exc_info=True)
             raise
 
     def _log_query(self, query: str, parameters: Optional[Dict[str, Any]]=None):
@@ -143,7 +158,7 @@ class ClickHouseClient:
 
     def manage_chunk_table(self, table_name: str, data: List[List[Any]], column_names: List[str]):
         """
-        Recreates and populates a temporary table for a chunk of data.
+        Recreates and populates a temporary table for a chunk of data in the temp database.
         This is the canonical ClickHouse approach for filtering large datasets.
 
         Args:
@@ -152,21 +167,24 @@ class ClickHouseClient:
             column_names: Column names for the table
         """
         try:
+            # Full table name with temp database
+            full_table_name = f"{self.temp_database}.{table_name}"
+
             # Drop table if exists (safe even if it doesn't exist)
-            drop_query = f"DROP TABLE IF EXISTS {table_name}"
+            drop_query = f"DROP TABLE IF EXISTS {full_table_name}"
             self.client.command(drop_query)
-            logger.debug(f"Dropped temporary table '{table_name}' if it existed")
+            logger.debug(f"Dropped table '{full_table_name}' if it existed")
 
-            # Create temporary table (ENGINE = Memory for fast in-memory operations)
+            # Create table in temp database (ENGINE = Memory for fast in-memory operations)
             columns_def = ', '.join([f"{col} String" for col in column_names])
-            create_query = f"CREATE TEMPORARY TABLE {table_name} ({columns_def}) ENGINE = Memory"
+            create_query = f"CREATE TABLE IF NOT EXISTS {full_table_name} ({columns_def}) ENGINE = Memory"
             self.client.command(create_query)
-            logger.debug(f"Created temporary table '{table_name}'")
+            logger.debug(f"Created table '{full_table_name}'")
 
-            # Insert data into temporary table
-            logger.info(f"Uploading {len(data):,} rows to temporary table '{table_name}'...")
-            self.client.insert(table_name, data, column_names=column_names)
-            logger.info(f"Successfully uploaded data to '{table_name}'")
+            # Insert data into temp table
+            logger.info(f"Uploading {len(data):,} rows to '{full_table_name}'...")
+            self.client.insert(full_table_name, data, column_names=column_names)
+            logger.info(f"Successfully uploaded data to '{full_table_name}'")
 
         except Exception as e:
             logger.error(f"Failed to manage temporary table '{table_name}': {e}", exc_info=True)

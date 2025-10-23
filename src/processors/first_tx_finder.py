@@ -2,6 +2,7 @@ import logging
 from typing import List, Dict
 import polars as pl
 from ..database import ClickHouseClient
+from ..config import Config
 logger = logging.getLogger(__name__)
 
 class FirstTxFinder:
@@ -75,18 +76,19 @@ class FirstTxFinder:
 
     def _get_first_mints_for_chunk(self) -> List[Dict]:
         """
-        Query first mint dates for tokens in chunk_tokens temporary table.
+        Query first mint dates for tokens in temp database chunk_tokens table.
         """
-        query = """
+        temp_db = Config.CLICKHOUSE_TEMP_DATABASE
+        query = f"""
         SELECT
             mint,
             MIN(block_time) as first_mint
         FROM solana.mints
-        WHERE mint IN (SELECT mint FROM chunk_tokens)
+        WHERE mint IN (SELECT mint FROM {temp_db}.chunk_tokens)
         GROUP BY mint
         """
 
-        logger.debug('Executing first mint aggregation from chunk_tokens table')
+        logger.debug(f'Executing first mint aggregation from {temp_db}.chunk_tokens table')
         try:
             result = self.db_client.execute_query_dict(query)
             # Decode binary mint addresses to strings
@@ -105,28 +107,29 @@ class FirstTxFinder:
 
     def _get_first_swaps_for_chunk(self) -> List[Dict]:
         """
-        Query first swap dates for tokens in chunk_tokens temporary table.
+        Query first swap dates for tokens in temp database chunk_tokens table.
         Uses UNION ALL to check both base_coin and quote_coin.
         """
-        query = """
+        temp_db = Config.CLICKHOUSE_TEMP_DATABASE
+        query = f"""
         SELECT
             token,
             MIN(block_time) as first_swap
         FROM (
             SELECT base_coin as token, block_time
             FROM solana.swaps
-            WHERE base_coin IN (SELECT mint FROM chunk_tokens)
+            WHERE base_coin IN (SELECT mint FROM {temp_db}.chunk_tokens)
 
             UNION ALL
 
             SELECT quote_coin as token, block_time
             FROM solana.swaps
-            WHERE quote_coin IN (SELECT mint FROM chunk_tokens)
+            WHERE quote_coin IN (SELECT mint FROM {temp_db}.chunk_tokens)
         )
         GROUP BY token
         """
 
-        logger.debug('Executing first swap aggregation from chunk_tokens table')
+        logger.debug(f'Executing first swap aggregation from {temp_db}.chunk_tokens table')
         try:
             result = self.db_client.execute_query_dict(query)
             # Decode binary token addresses to strings
