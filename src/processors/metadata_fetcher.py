@@ -2,11 +2,14 @@ import logging
 import base58
 import hashlib
 import struct
+import base64
 from typing import Dict, List, Optional, Tuple
 import requests
 from ..config import Config
-from ..config import config
+
 logger = logging.getLogger(__name__)
+
+METAPLEX_PROGRAM_ID = "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s"
 
 
 class MetadataFetcher:
@@ -92,13 +95,31 @@ class MetadataFetcher:
             if isinstance(results, dict) and 'result' in results:
                 results = [results]
 
+            found_count = 0
             for idx, item in enumerate(results):
+                if idx >= len(metadata_accounts):
+                    logger.warning(f'Response index {idx} out of range')
+                    continue
+
                 mint, metadata_pda = metadata_accounts[idx]
                 metadata = self._parse_metadata_account(item)
                 self.metadata_cache[mint] = metadata
 
+                if metadata and metadata[0]:  # Has symbol
+                    found_count += 1
+                    logger.debug(f'Found metadata for {mint[:8]}...: symbol={metadata[0]}, name={metadata[1]}')
+                else:
+                    logger.debug(f'No metadata found for {mint[:8]}... at PDA {metadata_pda[:8]}...')
+
+            if found_count > 0:
+                logger.info(f'Successfully fetched metadata for {found_count}/{len(metadata_accounts)} tokens in this batch')
+
         except requests.exceptions.RequestException as e:
             logger.error(f'RPC request failed for metadata batch: {e}')
+            for mint, _ in metadata_accounts:
+                self.metadata_cache.setdefault(mint, (None, None, None))
+        except Exception as e:
+            logger.error(f'Unexpected error processing metadata batch: {e}', exc_info=True)
             for mint, _ in metadata_accounts:
                 self.metadata_cache.setdefault(mint, (None, None, None))
 
@@ -188,7 +209,7 @@ class MetadataFetcher:
 
     def _parse_metadata_account(self, rpc_response: dict) -> Tuple[Optional[str], Optional[str], Optional[str]]:
         """
-        Parse Metaplex metadata account data.
+        Parse Metaplex metadata account data according to the Metaplex Token Metadata standard.
 
         Args:
             rpc_response: RPC response containing account data
@@ -198,32 +219,61 @@ class MetadataFetcher:
         """
         try:
             result = rpc_response.get('result')
-            if not result or not result.get('value'):
+            if not result:
+                logger.debug('No result in RPC response')
                 return (None, None, None)
 
-            account_data = result['value'].get('data')
-            if not account_data or not isinstance(account_data, list) or len(account_data) < 2:
+            value = result.get('value')
+            if not value:
+                logger.debug('No value in result (account does not exist)')
                 return (None, None, None)
 
-            data_bytes = base64.b64decode(account_data[0])
-
-            if len(data_bytes) < 1 + 32 + 32 + 4:
+            account_data = value.get('data')
+            if not account_data or not isinstance(account_data, list) or len(account_data) < 1:
+                logger.debug(f'Invalid account data format: {type(account_data)}')
                 return (None, None, None)
 
-            offset = 1 + 32 + 32
+            # Decode base64 data
+            try:
+                data_bytes = base64.b64decode(account_data[0])
+            except Exception as e:
+                logger.debug(f'Failed to decode base64 data: {e}')
+                return (None, None, None)
 
+            logger.debug(f'Decoded {len(data_bytes)} bytes of metadata')
+
+            # Metaplex metadata structure (fixed-size fields):
+            # - key (1 byte)
+            # - update_authority (32 bytes)
+            # - mint (32 bytes)
+            # - name (4 bytes length + 32 bytes fixed data)
+            # - symbol (4 bytes length + 10 bytes fixed data)
+            # - uri (4 bytes length + 200 bytes fixed data)
+
+            if len(data_bytes) < 65:
+                logger.debug(f'Data too short: {len(data_bytes)} bytes')
+                return (None, None, None)
+
+            offset = 65  # Skip key (1) + update_authority (32) + mint (32)
+
+            # Read name (4-byte length prefix + 32-byte fixed size)
             name = self._read_string(data_bytes, offset)
-            offset += 4 + 32
+            offset += 4 + 32  # Always increment by fixed size
 
+            # Read symbol (4-byte length prefix + 10-byte fixed size)
             symbol = self._read_string(data_bytes, offset)
-            offset += 4 + 10
+            offset += 4 + 10  # Always increment by fixed size
 
+            # Read URI (4-byte length prefix + 200-byte fixed size)
             uri = self._read_string(data_bytes, offset)
+
+            if symbol or name or uri:
+                logger.debug(f'Parsed metadata: symbol="{symbol}", name="{name}", uri="{uri}"')
 
             return (symbol, name, uri)
 
         except Exception as e:
-            logger.debug(f'Failed to parse metadata account: {e}')
+            logger.debug(f'Failed to parse metadata account: {e}', exc_info=True)
             return (None, None, None)
 
     def _read_string(self, data: bytes, offset: int) -> Optional[str]:
@@ -241,13 +291,20 @@ class MetadataFetcher:
             if offset + 4 > len(data):
                 return None
 
+            # Read 4-byte little-endian length prefix
             length = struct.unpack('<I', data[offset:offset + 4])[0]
 
-            if length == 0 or offset + 4 + length > len(data):
-                return None
+            if length == 0:
+                return None  # Empty string
 
+            if offset + 4 + length > len(data):
+                return None  # Not enough data
+
+            # Read the actual string bytes
             string_data = data[offset + 4:offset + 4 + length]
-            return string_data.decode('utf-8', errors='ignore').rstrip('\x00').strip()
+            decoded = string_data.decode('utf-8', errors='ignore').rstrip('\x00').strip()
+
+            return decoded if decoded else None
 
         except Exception as e:
             logger.debug(f'Failed to read string at offset {offset}: {e}')
