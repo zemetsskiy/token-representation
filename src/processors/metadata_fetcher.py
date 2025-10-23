@@ -44,12 +44,16 @@ class MetadataFetcher:
             self._fetch_metadata_batch(batch)
 
         result = {}
+        metadata_found = 0
         for addr in token_addresses:
             s = addr.decode('utf-8', errors='ignore') if isinstance(addr, (bytes, bytearray)) else str(addr)
             s = s.replace('\x00', '').strip()
-            result[s] = self.metadata_cache.get(s, (None, None, None))
+            metadata = self.metadata_cache.get(s, (None, None, None))
+            result[s] = metadata
+            if metadata and metadata[0] is not None:  # Has symbol
+                metadata_found += 1
 
-        logger.info(f'Finished resolving metadata. Total cached: {len(self.metadata_cache)}')
+        logger.info(f'Finished resolving metadata. Found metadata for {metadata_found}/{len(token_addresses)} tokens')
         return result
 
     def _fetch_metadata_batch(self, mint_addresses: List[str]):
@@ -61,7 +65,8 @@ class MetadataFetcher:
             if metadata_pda:
                 metadata_accounts.append((mint, metadata_pda))
             else:
-                logger.warning(f'Could not derive metadata PDA for {mint}')
+                # Many tokens don't have Metaplex metadata - this is expected
+                logger.debug(f'Could not derive metadata PDA for {mint}')
                 self.metadata_cache[mint] = (None, None, None)
 
         if not metadata_accounts:
@@ -108,15 +113,18 @@ class MetadataFetcher:
             Metadata PDA address or None if derivation fails
         """
         try:
-            program_id_bytes = base58.b58decode(config.METAPLEX_PROGRAM_ID)
-            mint_bytes = base58.b58decode(mint_address.encode('utf-8'))
+            # Decode addresses from base58
+            program_id_bytes = base58.b58decode(METAPLEX_PROGRAM_ID)
+            mint_bytes = base58.b58decode(mint_address)
 
+            # Seeds for PDA derivation
             seeds = [
                 b"metadata",
                 program_id_bytes,
                 mint_bytes
             ]
 
+            # Find program address
             pda, _ = self._find_program_address(seeds, program_id_bytes)
             return base58.b58encode(pda).decode('utf-8')
 
