@@ -132,12 +132,12 @@ class LiquidityAnalyzer:
                 base_pool_balance_after,
                 quote_pool_balance_after
             FROM solana.swaps
+            PREWHERE (
+                (quote_coin = '{SOL_ADDRESS}' OR quote_coin IN ('{usdc}', '{usdt}'))
+                OR (base_coin = '{SOL_ADDRESS}' OR base_coin IN ('{usdc}', '{usdt}'))
+            )
             WHERE (base_coin IN (SELECT mint FROM {temp_db}.chunk_tokens)
                    OR quote_coin IN (SELECT mint FROM {temp_db}.chunk_tokens))
-              AND (
-                  (quote_coin = '{SOL_ADDRESS}' OR quote_coin IN ('{usdc}', '{usdt}'))
-                  OR (base_coin = '{SOL_ADDRESS}' OR base_coin IN ('{usdc}', '{usdt}'))
-              )
         )
         WHERE token IN (SELECT mint FROM {temp_db}.chunk_tokens)
         GROUP BY token

@@ -59,9 +59,8 @@ class FirstTxFinder:
                 schema={'token': pl.Utf8, 'first_swap': pl.Datetime}
             )
 
-        # Rename token column to mint for consistency
-        if len(df_first_swaps) > 0:
-            df_first_swaps = df_first_swaps.rename({'token': 'mint'})
+        # Rename token column to mint for consistency (always, even if empty)
+        df_first_swaps = df_first_swaps.rename({'token': 'mint'})
 
         # Join first tx dates
         df_chunk = df_first_mints.join(df_first_swaps, on='mint', how='outer')

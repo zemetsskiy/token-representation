@@ -57,8 +57,8 @@ class ClickHouseClient:
                 # Increase timeout for large aggregation queries
                 settings = {
                     'session_id': str(uuid4()),
-                    'session_timeout': 300,  # 5 minutes
-                    'max_execution_time': 300  # 5 minutes query execution
+                    'session_timeout': 900,  # 15 minutes
+                    'max_execution_time': 900  # 15 minutes query execution
                 }
 
                 result = self.client.query(query, parameters=parameters or {}, settings=settings)
@@ -93,8 +93,8 @@ class ClickHouseClient:
                 # Increase timeout for large aggregation queries
                 settings = {
                     'session_id': str(uuid4()),
-                    'session_timeout': 300,  # 5 minutes
-                    'max_execution_time': 300  # 5 minutes query execution
+                    'session_timeout': 900,  # 15 minutes
+                    'max_execution_time': 900  # 15 minutes query execution
                 }
 
                 result = self.client.query(query, parameters=parameters or {}, settings=settings)
