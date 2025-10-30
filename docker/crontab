@@ -1,0 +1,15 @@
+# Timezone: UTC
+# Logs: /app/logs/worker-*.log
+
+SHELL=/bin/bash
+PATH=/usr/local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+PYTHONPATH=/app:/app/src
+
+# High-frequency processing: 500+ swaps in 7 days - every 5 minutes
+*/5 * * * * cd /app && /usr/local/bin/python /app/worker_scheduled.py --view sol_500_swaps_7_days >> /app/logs/worker-500-swaps-7d.log 2>&1
+
+# Daily processing at 00:00 UTC: 1000+ swaps in 3 days
+0 0 * * * cd /app && /usr/local/bin/python /app/worker_scheduled.py --view sol_1000_swaps_3_days >> /app/logs/worker-1000-swaps-3d.log 2>&1
+
+# Daily processing at 00:10 UTC: 100+ swaps in 30 days (offset by 10 minutes to avoid overlap)
+10 0 * * * cd /app && /usr/local/bin/python /app/worker_scheduled.py --view sol_100_swaps_30_days >> /app/logs/worker-100-swaps-30d.log 2>&1
