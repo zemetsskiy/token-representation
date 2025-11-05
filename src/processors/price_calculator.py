@@ -53,9 +53,8 @@ class PriceCalculator:
                 schema={'token': pl.Utf8, 'last_price_in_sol': pl.Float64}
             )
 
-        # Rename token column to mint for consistency
-        if len(df_prices) > 0:
-            df_prices = df_prices.rename({'token': 'mint', 'last_price_in_sol': 'price_in_sol'})
+        # Rename token column to mint for consistency (always, even if empty)
+        df_prices = df_prices.rename({'token': 'mint', 'last_price_in_sol': 'price_in_sol'})
 
         # Fill nulls with 0 and calculate USD price
         df_prices = df_prices.with_columns([
