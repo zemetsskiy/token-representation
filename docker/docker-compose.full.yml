@@ -10,9 +10,9 @@ services:
     env_file:
       - ../.env
     environment:
-      POSTGRES_DB: token_metrics
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres_secure_password
+      POSTGRES_DB: ${POSTGRES_DATABASE:-token_metrics}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       PGDATA: /var/lib/postgresql/data/pgdata
     volumes:
       - postgres_data:/var/lib/postgresql/data
@@ -43,12 +43,9 @@ services:
     env_file:
       - ../.env
     environment:
-      # Override with container names
+      # Override with container names (for docker-to-docker communication)
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
-      POSTGRES_DATABASE: token_metrics
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres_secure_password
     volumes:
       - ../src:/app/src:ro
       - ../logs:/app/logs
