@@ -8,11 +8,8 @@ services:
       dockerfile: Dockerfile
     container_name: token-metrics-postgres
     env_file:
-      - ../.env
+      - .env
     environment:
-      POSTGRES_DB: ${POSTGRES_DATABASE:-token_metrics}
-      POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       PGDATA: /var/lib/postgresql/data/pgdata
     volumes:
       - postgres_data:/var/lib/postgresql/data

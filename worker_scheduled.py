@@ -165,6 +165,15 @@ class ScheduledTokenWorker(TokenAggregationWorker):
             logger.info('=' * 100)
             save_start = time.time()
 
+            # Remove duplicates - keep the last occurrence of each token
+            original_count = len(final_df)
+            final_df = final_df.unique(subset=['mint'], keep='last')
+            deduplicated_count = len(final_df)
+
+            if original_count > deduplicated_count:
+                logger.warning(f'Removed {original_count - deduplicated_count:,} duplicate tokens')
+                logger.info(f'Final unique tokens: {deduplicated_count:,}')
+
             try:
                 rows_inserted = self.postgres_client.insert_token_metrics_batch(
                     df=final_df,

@@ -40,10 +40,9 @@ CREATE TABLE IF NOT EXISTS token_data.token_metrics (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
     -- View source metadata (which materialized view this came from)
-    view_source VARCHAR(100),
+    view_source VARCHAR(100)
 
-    -- Constraints
-    CONSTRAINT unique_token_per_update UNIQUE (token_address, blockchain, updated_at)
+    -- No unique constraint - allow multiple records per token for historical tracking
 );
 
 -- Create indexes for better query performance
