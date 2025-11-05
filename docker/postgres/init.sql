@@ -118,7 +118,7 @@ CREATE TRIGGER update_token_metrics_updated_at
 -- Grant permissions (adjust user as needed)
 GRANT USAGE ON SCHEMA token_data TO PUBLIC;
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA token_data TO PUBLIC;
-GRANT SELECT ON ALL VIEWS IN SCHEMA token_data TO PUBLIC;
+-- Note: Views are already covered by the ALL TABLES grant above
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA token_data TO PUBLIC;
 
 -- Add comments for documentation

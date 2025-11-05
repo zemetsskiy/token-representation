@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # PostgreSQL database for storing processed token metrics
   postgres:
@@ -20,7 +18,7 @@ services:
       - token-network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d token_metrics"]
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DATABASE || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
