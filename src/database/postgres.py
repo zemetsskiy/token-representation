@@ -110,6 +110,17 @@ class PostgresClient:
         total_inserted = 0
         update_time = datetime.utcnow()
 
+        # PostgreSQL BIGINT max value
+        BIGINT_MAX = 9223372036854775807
+
+        def safe_int(value, default=0):
+            """Convert to int and cap at BIGINT_MAX to prevent overflow"""
+            try:
+                val = int(value or default)
+                return min(max(val, 0), BIGINT_MAX)
+            except (ValueError, TypeError):
+                return default
+
         try:
             # Convert DataFrame to list of tuples
             rows = []
@@ -122,8 +133,8 @@ class PostgresClient:
                     float(row.get('market_cap_usd', 0) or 0),
                     float(row.get('supply', 0) or 0),
                     float(row.get('burned', 0) or 0),
-                    int(row.get('total_minted', 0) or 0),
-                    int(row.get('total_burned', 0) or 0),
+                    safe_int(row.get('total_minted', 0)),
+                    safe_int(row.get('total_burned', 0)),
                     float(row.get('largest_lp_pool_usd', 0) or 0),
                     row.get('source'),
                     row.get('first_tx_date'),
@@ -204,6 +215,17 @@ class PostgresClient:
         total_upserted = 0
         update_time = datetime.utcnow()
 
+        # PostgreSQL BIGINT max value
+        BIGINT_MAX = 9223372036854775807
+
+        def safe_int(value, default=0):
+            """Convert to int and cap at BIGINT_MAX to prevent overflow"""
+            try:
+                val = int(value or default)
+                return min(max(val, 0), BIGINT_MAX)
+            except (ValueError, TypeError):
+                return default
+
         try:
             rows = []
             for row in df.iter_rows(named=True):
@@ -215,8 +237,8 @@ class PostgresClient:
                     float(row.get('market_cap_usd', 0) or 0),
                     float(row.get('supply', 0) or 0),
                     float(row.get('burned', 0) or 0),
-                    int(row.get('total_minted', 0) or 0),
-                    int(row.get('total_burned', 0) or 0),
+                    safe_int(row.get('total_minted', 0)),
+                    safe_int(row.get('total_burned', 0)),
                     float(row.get('largest_lp_pool_usd', 0) or 0),
                     row.get('source'),
                     row.get('first_tx_date'),
