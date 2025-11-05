@@ -16,7 +16,7 @@ src_path = project_root / 'src'
 sys.path.insert(0, str(src_path))
 
 from src.config import Config, setup_logging
-from src.database import get_db_client
+from src.database import get_db_client, get_postgres_client
 from src.core.main import TokenAggregationWorker
 
 setup_logging()
@@ -50,6 +50,7 @@ class ScheduledTokenWorker(TokenAggregationWorker):
     def __init__(self, view_name: str):
         super().__init__()
         self.view_name = view_name
+        self.postgres_client = get_postgres_client()
 
         if view_name not in VIEW_CONFIGS:
             raise ValueError(f"Unknown view: {view_name}. Available views: {list(VIEW_CONFIGS.keys())}")
@@ -156,6 +157,35 @@ class ScheduledTokenWorker(TokenAggregationWorker):
             # Print results
             self._print_results(final_df)
             self._print_performance_report()
+
+            # Save results to PostgreSQL
+            logger.info('')
+            logger.info('=' * 100)
+            logger.info('SAVING RESULTS TO POSTGRESQL')
+            logger.info('=' * 100)
+            save_start = time.time()
+
+            try:
+                rows_inserted = self.postgres_client.insert_token_metrics_batch(
+                    df=final_df,
+                    view_source=self.view_name,
+                    batch_size=1000
+                )
+                save_duration = time.time() - save_start
+                logger.info(f'Saved {rows_inserted:,} rows to PostgreSQL in {save_duration:.2f}s')
+
+                # Refresh materialized views
+                self.postgres_client.refresh_materialized_views()
+
+                # Get statistics
+                total_count = self.postgres_client.get_metrics_count()
+                logger.info(f'Total metrics in database: {total_count:,}')
+
+            except Exception as e:
+                logger.error(f'Failed to save to PostgreSQL: {e}', exc_info=True)
+                logger.warning('Results printed but not saved to database')
+
+            logger.info('=' * 100)
 
             return len(final_df)
 

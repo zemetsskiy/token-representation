@@ -1,0 +1,86 @@
+version: '3.8'
+
+services:
+  # PostgreSQL database for storing processed token metrics
+  postgres:
+    build:
+      context: ../docker/postgres
+      dockerfile: Dockerfile
+    container_name: token-metrics-postgres
+    environment:
+      POSTGRES_DB: token_metrics
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres_secure_password}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      - "5432:5432"
+    networks:
+      - token-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d token_metrics"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Scheduled token worker with cron
+  token-worker-scheduled:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.scheduled
+    container_name: token-worker-scheduled
+    env_file:
+      - ../.env
+    environment:
+      # Override with container names
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DATABASE: token_metrics
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres_secure_password}
+    volumes:
+      - ../src:/app/src:ro
+      - ../logs:/app/logs
+      - ../worker_scheduled.py:/app/worker_scheduled.py:ro
+    networks:
+      - token-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: '4'
+          memory: 16G
+        reservations:
+          cpus: '1'
+          memory: 8G
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "pgrep", "-f", "cron"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+volumes:
+  postgres_data:
+    driver: local
+
+networks:
+  token-network:
+    driver: bridge

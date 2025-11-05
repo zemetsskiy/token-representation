@@ -3,17 +3,31 @@ from dotenv import load_dotenv
 load_dotenv()
 
 class Config:
+    # ClickHouse Configuration (Data Source)
     CLICKHOUSE_HOST = os.getenv('CLICKHOUSE_HOST', 'localhost')
     CLICKHOUSE_PORT = int(os.getenv('CLICKHOUSE_PORT', '8123'))
     CLICKHOUSE_USER = os.getenv('CLICKHOUSE_USER', 'default')
     CLICKHOUSE_PASSWORD = os.getenv('CLICKHOUSE_PASSWORD', '')
     CLICKHOUSE_DATABASE = os.getenv('CLICKHOUSE_DATABASE', 'solana')
     CLICKHOUSE_TEMP_DATABASE = os.getenv('CLICKHOUSE_TEMP_DATABASE', 'temp_processing')
+
+    # PostgreSQL Configuration (Storage)
+    POSTGRES_HOST = os.getenv('POSTGRES_HOST', 'localhost')
+    POSTGRES_PORT = int(os.getenv('POSTGRES_PORT', '5432'))
+    POSTGRES_USER = os.getenv('POSTGRES_USER', 'postgres')
+    POSTGRES_PASSWORD = os.getenv('POSTGRES_PASSWORD', 'postgres')
+    POSTGRES_DATABASE = os.getenv('POSTGRES_DATABASE', 'token_metrics')
+
+    # Worker Configuration
     BATCH_SIZE = int(os.getenv('BATCH_SIZE', '100'))
     CHUNK_SIZE = int(os.getenv('CHUNK_SIZE', '1000000'))
     LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
+
+    # Solana Configuration
     SOLANA_HTTP_RPC_URL = os.getenv('SOLANA_HTTP_RPC_URL')
     METAPLEX_PROGRAM_ID = os.getenv('METAPLEX_PROGRAM_ID', 'metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s')
+
+    # Constants
     STABLECOINS = {'USDC': 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', 'USDT': 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB'}
     SOL_ADDRESS = 'So11111111111111111111111111111111111111112'
     SOL_PRICE_USD = 188
