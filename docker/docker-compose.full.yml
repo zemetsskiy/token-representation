@@ -7,10 +7,12 @@ services:
       context: ../docker/postgres
       dockerfile: Dockerfile
     container_name: token-metrics-postgres
+    env_file:
+      - ../.env
     environment:
       POSTGRES_DB: token_metrics
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres_secure_password}
+      POSTGRES_PASSWORD: postgres_secure_password
       PGDATA: /var/lib/postgresql/data/pgdata
     volumes:
       - postgres_data:/var/lib/postgresql/data
@@ -46,7 +48,7 @@ services:
       POSTGRES_PORT: 5432
       POSTGRES_DATABASE: token_metrics
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres_secure_password}
+      POSTGRES_PASSWORD: postgres_secure_password
     volumes:
       - ../src:/app/src:ro
       - ../logs:/app/logs
