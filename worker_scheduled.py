@@ -62,17 +62,26 @@ class ScheduledTokenWorker(TokenAggregationWorker):
 
     def discover_tokens_from_view(self) -> list:
         """
-        Fetch tokens from the specified materialized view
+        Fetch distinct tokens from the specified materialized view.
+        Excludes SOL, USDC, USDT (we only want tokens that trade AGAINST these pairs).
 
         Returns:
-            List of token addresses
+            List of unique token addresses
         """
+        # Build exclusion list: SOL + all stablecoins
+        exclude_tokens = [Config.SOL_ADDRESS] + list(Config.STABLECOINS.values())
+
+        # Create SQL list for exclusion
+        exclude_list = ', '.join([f"'{token}'" for token in exclude_tokens])
+
         query = f"""
-        SELECT token
+        SELECT DISTINCT token
         FROM {self.view_config['view']}
+        WHERE token NOT IN ({exclude_list})
         """
 
-        logger.info(f"Fetching tokens from {self.view_config['view']}")
+        logger.info(f"Fetching DISTINCT tokens from {self.view_config['view']}")
+        logger.info(f"Excluding base tokens: SOL, USDC, USDT")
         try:
             result = self.db_client.execute_query_dict(query)
 
@@ -87,7 +96,7 @@ class ScheduledTokenWorker(TokenAggregationWorker):
                     token_str = str(token_value).rstrip('\x00')
                 tokens.append(token_str)
 
-            logger.info(f"Fetched {len(tokens):,} tokens from {self.view_config['view']}")
+            logger.info(f"Fetched {len(tokens):,} distinct tokens (after filtering)")
             return tokens
 
         except Exception as e:
