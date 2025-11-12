@@ -37,13 +37,15 @@ class ClickHouseClient:
 
     def _log_query(self, query: str, parameters: Optional[Dict[str, Any]]=None):
         try:
-            # Only log query summary (first 10 words) for brevity
+            # Log full query for debugging
             q = (query or '').strip()
             if q:
-                query_summary = ' '.join(q.split()[:10])
-                logger.debug(f'Query: {query_summary}...')
-            if parameters:
-                logger.debug(f'Parameters: {len(parameters)} params')
+                logger.info('=' * 80)
+                logger.info('CLICKHOUSE QUERY:')
+                logger.info(q)
+                if parameters:
+                    logger.info(f'PARAMETERS: {parameters}')
+                logger.info('=' * 80)
         except Exception as log_err:
             logger.debug(f'Failed to log SQL query: {log_err}')
 
