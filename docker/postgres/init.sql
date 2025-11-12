@@ -13,8 +13,9 @@ CREATE TABLE IF NOT EXISTS token_data.token_metrics (
     id BIGSERIAL PRIMARY KEY,
 
     -- Token identification
-    token_address VARCHAR(48) NOT NULL,
-    blockchain VARCHAR(50) NOT NULL DEFAULT 'solana',
+    contract_address VARCHAR(48) NOT NULL,
+    chain VARCHAR(50) NOT NULL DEFAULT 'solana',
+    decimals INTEGER,
 
     -- Token metadata
     symbol VARCHAR(20),
@@ -46,23 +47,24 @@ CREATE TABLE IF NOT EXISTS token_data.token_metrics (
 );
 
 -- Create indexes for better query performance
-CREATE INDEX IF NOT EXISTS idx_token_address ON token_data.token_metrics(token_address);
-CREATE INDEX IF NOT EXISTS idx_blockchain ON token_data.token_metrics(blockchain);
+CREATE INDEX IF NOT EXISTS idx_contract_address ON token_data.token_metrics(contract_address);
+CREATE INDEX IF NOT EXISTS idx_chain ON token_data.token_metrics(chain);
 CREATE INDEX IF NOT EXISTS idx_updated_at ON token_data.token_metrics(updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_market_cap ON token_data.token_metrics(market_cap_usd DESC);
 CREATE INDEX IF NOT EXISTS idx_price ON token_data.token_metrics(price_usd DESC);
 CREATE INDEX IF NOT EXISTS idx_view_source ON token_data.token_metrics(view_source);
-CREATE INDEX IF NOT EXISTS idx_token_blockchain ON token_data.token_metrics(token_address, blockchain);
+CREATE INDEX IF NOT EXISTS idx_contract_chain ON token_data.token_metrics(contract_address, chain);
 
 -- Create composite index for common queries
-CREATE INDEX IF NOT EXISTS idx_token_updated ON token_data.token_metrics(token_address, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_contract_updated ON token_data.token_metrics(contract_address, updated_at DESC);
 
 -- Create a view for latest metrics per token
 CREATE OR REPLACE VIEW token_data.latest_token_metrics AS
-SELECT DISTINCT ON (token_address, blockchain)
+SELECT DISTINCT ON (contract_address, chain)
     id,
-    token_address,
-    blockchain,
+    contract_address,
+    chain,
+    decimals,
     symbol,
     name,
     price_usd,
@@ -78,13 +80,14 @@ SELECT DISTINCT ON (token_address, blockchain)
     updated_at,
     view_source
 FROM token_data.token_metrics
-ORDER BY token_address, blockchain, updated_at DESC;
+ORDER BY contract_address, chain, updated_at DESC;
 
 -- Create materialized view for top tokens by market cap
 CREATE MATERIALIZED VIEW IF NOT EXISTS token_data.top_tokens_by_market_cap AS
-SELECT DISTINCT ON (token_address)
-    token_address,
-    blockchain,
+SELECT DISTINCT ON (contract_address)
+    contract_address,
+    chain,
+    decimals,
     symbol,
     price_usd,
     market_cap_usd,
@@ -94,7 +97,7 @@ SELECT DISTINCT ON (token_address)
     updated_at
 FROM token_data.token_metrics
 WHERE market_cap_usd > 0
-ORDER BY token_address, updated_at DESC, market_cap_usd DESC
+ORDER BY contract_address, updated_at DESC, market_cap_usd DESC
 LIMIT 10000;
 
 CREATE INDEX IF NOT EXISTS idx_top_tokens_market_cap
@@ -123,8 +126,9 @@ GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA token_data TO PUBLIC;
 
 -- Add comments for documentation
 COMMENT ON TABLE token_data.token_metrics IS 'Stores token metrics from various sources with historical tracking';
-COMMENT ON COLUMN token_data.token_metrics.token_address IS 'Token mint address (44 chars for Solana)';
-COMMENT ON COLUMN token_data.token_metrics.blockchain IS 'Blockchain identifier (e.g., solana, ethereum)';
+COMMENT ON COLUMN token_data.token_metrics.contract_address IS 'Token contract address (44 chars for Solana, 42 for EVM)';
+COMMENT ON COLUMN token_data.token_metrics.chain IS 'Chain identifier (e.g., solana, ethereum, bsc)';
+COMMENT ON COLUMN token_data.token_metrics.decimals IS 'Token decimals (e.g., 6 for USDC, 18 for ETH)';
 COMMENT ON COLUMN token_data.token_metrics.price_usd IS 'Token price in USD';
 COMMENT ON COLUMN token_data.token_metrics.market_cap_usd IS 'Market capitalization in USD (price * supply)';
 COMMENT ON COLUMN token_data.token_metrics.supply IS 'Circulating supply (total_minted - total_burned)';

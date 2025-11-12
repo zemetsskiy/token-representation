@@ -88,8 +88,9 @@ class PostgresClient:
         # Prepare data for insertion
         insert_query = """
         INSERT INTO token_data.token_metrics (
-            token_address,
-            blockchain,
+            contract_address,
+            chain,
+            decimals,
             symbol,
             price_usd,
             market_cap_usd,
@@ -103,7 +104,7 @@ class PostgresClient:
             view_source,
             updated_at
         ) VALUES (
-            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
         )
         """
 
@@ -127,7 +128,8 @@ class PostgresClient:
             for row in df.iter_rows(named=True):
                 rows.append((
                     row.get('mint'),
-                    row.get('blockchain', 'solana'),
+                    row.get('chain', row.get('blockchain', 'solana')),
+                    row.get('decimals'),
                     row.get('symbol'),
                     float(row.get('price_usd', 0) or 0),
                     float(row.get('market_cap_usd', 0) or 0),
@@ -180,8 +182,9 @@ class PostgresClient:
 
         upsert_query = """
         INSERT INTO token_data.token_metrics (
-            token_address,
-            blockchain,
+            contract_address,
+            chain,
+            decimals,
             symbol,
             price_usd,
             market_cap_usd,
@@ -195,10 +198,11 @@ class PostgresClient:
             view_source,
             updated_at
         ) VALUES (
-            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
         )
-        ON CONFLICT (token_address, blockchain, updated_at)
+        ON CONFLICT (contract_address, chain, updated_at)
         DO UPDATE SET
+            decimals = EXCLUDED.decimals,
             symbol = EXCLUDED.symbol,
             price_usd = EXCLUDED.price_usd,
             market_cap_usd = EXCLUDED.market_cap_usd,
@@ -231,7 +235,8 @@ class PostgresClient:
             for row in df.iter_rows(named=True):
                 rows.append((
                     row.get('mint'),
-                    row.get('blockchain', 'solana'),
+                    row.get('chain', row.get('blockchain', 'solana')),
+                    row.get('decimals'),
                     row.get('symbol'),
                     float(row.get('price_usd', 0) or 0),
                     float(row.get('market_cap_usd', 0) or 0),
@@ -261,23 +266,23 @@ class PostgresClient:
             self.connection.rollback()
             raise
 
-    def get_latest_metrics(self, token_address: str, blockchain: str = 'solana') -> Optional[Dict[str, Any]]:
+    def get_latest_metrics(self, contract_address: str, chain: str = 'solana') -> Optional[Dict[str, Any]]:
         """
         Get latest metrics for a specific token.
 
         Args:
-            token_address: Token address
-            blockchain: Blockchain name
+            contract_address: Token contract address
+            chain: Chain name
 
         Returns:
             Latest metrics as dict or None
         """
         query = """
         SELECT * FROM token_data.latest_token_metrics
-        WHERE token_address = %s AND blockchain = %s
+        WHERE contract_address = %s AND chain = %s
         """
         try:
-            results = self.execute_query(query, (token_address, blockchain))
+            results = self.execute_query(query, (contract_address, chain))
             return results[0] if results else None
         except Exception as e:
             logger.error(f'Failed to get latest metrics: {e}')
