@@ -91,38 +91,11 @@ class LiquidityAnalyzer:
         usdt = STABLECOINS['USDT']
 
         query = f"""
-        SELECT
-            token,
-            MIN(block_time) as first_swap,
-
-            -- Latest pool data (using argMax to get most recent)
-            argMax(
-                CASE
-                    WHEN source LIKE 'jupiter6_%' THEN substring(source, 10)
-                    WHEN source LIKE 'jupiter4_%' THEN substring(source, 10)
-                    WHEN source LIKE 'raydium_route_%' THEN substring(source, 15)
-                    ELSE source
-                END,
-                block_time
-            ) as latest_source,
-            argMax(base_coin, block_time) as latest_base_coin,
-            argMax(quote_coin, block_time) as latest_quote_coin,
-            argMax(base_pool_balance_after, block_time) as latest_base_balance,
-            argMax(quote_pool_balance_after, block_time) as latest_quote_balance,
-
-            -- Latest price vs SOL (using argMax)
-            argMax(
-                CASE
-                    WHEN quote_coin = '{SOL_ADDRESS}' THEN quote_coin_amount / NULLIF(base_coin_amount, 0)
-                    WHEN base_coin = '{SOL_ADDRESS}' THEN base_coin_amount / NULLIF(quote_coin_amount, 0)
-                    ELSE 0
-                END,
-                block_time
-            ) as latest_price_sol
-
-        FROM (
+        /* Optimized: avoid full scan + arrayJoin; prefilter by chunk in PREWHERE and split by side */
+        WITH
+        base_side AS (
             SELECT
-                arrayJoin([base_coin, quote_coin]) as token,
+                base_coin AS token,
                 block_time,
                 source,
                 base_coin,
@@ -132,12 +105,60 @@ class LiquidityAnalyzer:
                 base_pool_balance_after,
                 quote_pool_balance_after
             FROM solana.swaps
-            PREWHERE (
-                (quote_coin = '{SOL_ADDRESS}' OR quote_coin IN ('{usdc}', '{usdt}'))
-                OR (base_coin = '{SOL_ADDRESS}' OR base_coin IN ('{usdc}', '{usdt}'))
-            )
-            WHERE (base_coin IN (SELECT mint FROM {temp_db}.chunk_tokens)
-                   OR quote_coin IN (SELECT mint FROM {temp_db}.chunk_tokens))
+            PREWHERE
+                base_coin IN (SELECT mint FROM {temp_db}.chunk_tokens)
+                AND (
+                    quote_coin = '{SOL_ADDRESS}' OR quote_coin IN ('{usdc}', '{usdt}')
+                    OR base_coin = '{SOL_ADDRESS}' OR base_coin IN ('{usdc}', '{usdt}')
+                )
+        ),
+        quote_side AS (
+            SELECT
+                quote_coin AS token,
+                block_time,
+                source,
+                base_coin,
+                quote_coin,
+                base_coin_amount,
+                quote_coin_amount,
+                base_pool_balance_after,
+                quote_pool_balance_after
+            FROM solana.swaps
+            PREWHERE
+                quote_coin IN (SELECT mint FROM {temp_db}.chunk_tokens)
+                AND (
+                    quote_coin = '{SOL_ADDRESS}' OR quote_coin IN ('{usdc}', '{usdt}')
+                    OR base_coin = '{SOL_ADDRESS}' OR base_coin IN ('{usdc}', '{usdt}')
+                )
+        )
+        SELECT
+            token,
+            MIN(block_time) AS first_swap,
+            argMax(
+                CASE
+                    WHEN source LIKE 'jupiter6_%' THEN substring(source, 10)
+                    WHEN source LIKE 'jupiter4_%' THEN substring(source, 10)
+                    WHEN source LIKE 'raydium_route_%' THEN substring(source, 15)
+                    ELSE source
+                END,
+                block_time
+            ) AS latest_source,
+            argMax(base_coin, block_time) AS latest_base_coin,
+            argMax(quote_coin, block_time) AS latest_quote_coin,
+            argMax(base_pool_balance_after, block_time) AS latest_base_balance,
+            argMax(quote_pool_balance_after, block_time) AS latest_quote_balance,
+            argMax(
+                CASE
+                    WHEN quote_coin = '{SOL_ADDRESS}' THEN quote_coin_amount / NULLIF(base_coin_amount, 0)
+                    WHEN base_coin = '{SOL_ADDRESS}' THEN base_coin_amount / NULLIF(quote_coin_amount, 0)
+                    ELSE 0
+                END,
+                block_time
+            ) AS latest_price_sol
+        FROM (
+            SELECT * FROM base_side
+            UNION ALL
+            SELECT * FROM quote_side
         )
         WHERE token IN (SELECT mint FROM {temp_db}.chunk_tokens)
         GROUP BY token
