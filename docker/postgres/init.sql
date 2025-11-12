@@ -58,6 +58,11 @@ CREATE INDEX IF NOT EXISTS idx_contract_chain ON token_data.token_metrics(contra
 -- Create composite index for common queries
 CREATE INDEX IF NOT EXISTS idx_contract_updated ON token_data.token_metrics(contract_address, updated_at DESC);
 
+-- Partial index for efficient decimals lookup (only indexes rows with known decimals)
+CREATE INDEX IF NOT EXISTS idx_contract_chain_decimals
+ON token_data.token_metrics(contract_address, chain, decimals, updated_at DESC)
+WHERE decimals IS NOT NULL;
+
 -- Create a view for latest metrics per token
 CREATE OR REPLACE VIEW token_data.latest_token_metrics AS
 SELECT DISTINCT ON (contract_address, chain)

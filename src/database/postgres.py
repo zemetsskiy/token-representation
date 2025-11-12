@@ -66,6 +66,65 @@ class PostgresClient:
             self.connection.rollback()
             raise
 
+    def _get_known_decimals(self, tokens: List[tuple]) -> Dict[tuple, int]:
+        """
+        Efficiently fetch known decimals for a batch of tokens.
+
+        Args:
+            tokens: List of (contract_address, chain) tuples
+
+        Returns:
+            Dict mapping (contract_address, chain) -> decimals
+        """
+        if not tokens:
+            return {}
+
+        # Build query with VALUES for efficient IN clause
+        query = """
+        WITH input_tokens (contract_address, chain) AS (
+            VALUES %s
+        )
+        SELECT DISTINCT ON (t.contract_address, t.chain)
+            t.contract_address,
+            t.chain,
+            tm.decimals
+        FROM input_tokens t
+        JOIN token_data.token_metrics tm
+            ON tm.contract_address = t.contract_address
+            AND tm.chain = t.chain
+        WHERE tm.decimals IS NOT NULL
+        ORDER BY t.contract_address, t.chain, tm.updated_at DESC
+        """
+
+        try:
+            # Use execute_values for efficient batch query
+            from psycopg2.extras import execute_values
+
+            with self.connection.cursor() as cur:
+                execute_values(
+                    cur,
+                    query,
+                    tokens,
+                    template="(%s, %s)",
+                    page_size=1000
+                )
+                results = cur.fetchall()
+
+            # Build dict for O(1) lookup
+            decimals_map = {
+                (row[0], row[1]): row[2]
+                for row in results
+            }
+
+            if decimals_map:
+                logger.info(f'Found existing decimals for {len(decimals_map):,} tokens')
+
+            return decimals_map
+
+        except Exception as e:
+            logger.warning(f'Failed to fetch known decimals: {e}')
+            return {}
+
     def insert_token_metrics_batch(
         self,
         df: pl.DataFrame,
@@ -74,6 +133,7 @@ class PostgresClient:
     ) -> int:
         """
         Insert token metrics from Polars DataFrame in batches.
+        Automatically preserves existing decimals values.
 
         Args:
             df: Polars DataFrame with token metrics
@@ -84,6 +144,21 @@ class PostgresClient:
             Number of rows inserted
         """
         logger.info(f'Inserting {len(df):,} token metrics from {view_source}')
+
+        # Step 1: Get all unique (contract_address, chain) pairs from DataFrame
+        unique_tokens = []
+        for row in df.iter_rows(named=True):
+            token_key = (
+                row.get('mint'),
+                row.get('chain', row.get('blockchain', 'solana'))
+            )
+            unique_tokens.append(token_key)
+
+        # Remove duplicates while preserving order
+        unique_tokens = list(dict.fromkeys(unique_tokens))
+
+        # Step 2: Fetch known decimals for these tokens (single efficient query)
+        known_decimals = self._get_known_decimals(unique_tokens)
 
         # Prepare data for insertion
         insert_query = """
@@ -123,13 +198,32 @@ class PostgresClient:
                 return default
 
         try:
-            # Convert DataFrame to list of tuples
+            # Step 3: Convert DataFrame to list of tuples, using known decimals
             rows = []
+            decimals_preserved = 0
+            decimals_new = 0
+
             for row in df.iter_rows(named=True):
+                contract_addr = row.get('mint')
+                chain = row.get('chain', row.get('blockchain', 'solana'))
+                token_key = (contract_addr, chain)
+
+                # Use existing decimals if available, otherwise use new value
+                existing_decimals = known_decimals.get(token_key)
+                new_decimals = row.get('decimals')
+
+                if existing_decimals is not None:
+                    decimals_to_use = existing_decimals
+                    decimals_preserved += 1
+                else:
+                    decimals_to_use = new_decimals
+                    if new_decimals is not None:
+                        decimals_new += 1
+
                 rows.append((
-                    row.get('mint'),
-                    row.get('chain', row.get('blockchain', 'solana')),
-                    row.get('decimals'),
+                    contract_addr,
+                    chain,
+                    decimals_to_use,
                     row.get('symbol'),
                     float(row.get('price_usd', 0) or 0),
                     float(row.get('market_cap_usd', 0) or 0),
@@ -143,6 +237,11 @@ class PostgresClient:
                     view_source,
                     update_time
                 ))
+
+            if decimals_preserved > 0:
+                logger.info(f'  Preserved existing decimals for {decimals_preserved:,} tokens')
+            if decimals_new > 0:
+                logger.info(f'  Using new decimals for {decimals_new:,} tokens')
 
             # Insert in batches
             for i in range(0, len(rows), batch_size):
