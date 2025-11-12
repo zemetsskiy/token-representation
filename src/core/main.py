@@ -196,10 +196,9 @@ class TokenAggregationWorker:
 
         if not pool_data or len(pool_data) == 0:
             # No pool data - add empty liquidity columns only
-            # (supply, burned, market_cap, symbol, name, decimals, chain already exist)
+            # (supply, market_cap, symbol, name, decimals, chain already exist)
             df_tokens = df_tokens.with_columns([
-                pl.lit(0.0).alias('largest_lp_pool_usd'),
-                pl.lit('').alias('source')
+                pl.lit(0.0).alias('largest_lp_pool_usd')
             ])
             # Recalculate metrics with actual decimals
             df_tokens = df_tokens.with_columns([
@@ -211,11 +210,7 @@ class TokenAggregationWorker:
                 ((pl.col('total_minted') - pl.col('total_burned')) /
                  pl.when(pl.col('decimals').is_not_null())
                  .then(10.0 ** pl.col('decimals'))
-                 .otherwise(1e9)).alias('supply'),
-                (pl.col('total_burned') /
-                 pl.when(pl.col('decimals').is_not_null())
-                 .then(10.0 ** pl.col('decimals'))
-                 .otherwise(1e9)).alias('burned')
+                 .otherwise(1e9)).alias('supply')
             ])
             df_tokens = df_tokens.with_columns([
                 (pl.col('price_usd') * pl.col('supply')).alias('market_cap_usd')
@@ -251,13 +246,11 @@ class TokenAggregationWorker:
         # Create token-pool mapping (base and quote sides)
         df_pools_base = df_pools.select([
             pl.col('base_coin').alias('mint'),
-            pl.col('canonical_source').alias('source'),
             pl.col('liquidity_usd')
         ])
 
         df_pools_quote = df_pools.select([
             pl.col('quote_coin').alias('mint'),
-            pl.col('canonical_source').alias('source'),
             pl.col('liquidity_usd')
         ])
 
@@ -269,8 +262,7 @@ class TokenAggregationWorker:
             df_token_pools
             .group_by('mint')
             .agg([
-                pl.col('liquidity_usd').max().alias('largest_lp_pool_usd'),
-                pl.col('source').first().alias('source')
+                pl.col('liquidity_usd').max().alias('largest_lp_pool_usd')
             ])
         )
 
@@ -280,7 +272,6 @@ class TokenAggregationWorker:
         # Fill nulls and calculate final metrics
         df_tokens = df_tokens.with_columns([
             pl.col('largest_lp_pool_usd').fill_null(0.0),
-            pl.col('source').fill_null(''),
             pl.col('price_usd').fill_null(0.0),
             pl.col('total_minted').fill_null(0),
             pl.col('total_burned').fill_null(0)
@@ -291,11 +282,7 @@ class TokenAggregationWorker:
             ((pl.col('total_minted') - pl.col('total_burned')) /
              pl.when(pl.col('decimals').is_not_null())
              .then(10.0 ** pl.col('decimals'))
-             .otherwise(1e9)).alias('supply'),
-            (pl.col('total_burned') /
-             pl.when(pl.col('decimals').is_not_null())
-             .then(10.0 ** pl.col('decimals'))
-             .otherwise(1e9)).alias('burned')
+             .otherwise(1e9)).alias('supply')
         ])
 
         # Calculate market cap = price_usd * supply
@@ -326,10 +313,8 @@ class TokenAggregationWorker:
             'price_usd',
             'market_cap_usd',
             'supply',
-            'burned',
             'largest_lp_pool_usd',
-            'first_tx_date',
-            'source'
+            'first_tx_date'
         ]).head(10)
 
         print(df_display)
