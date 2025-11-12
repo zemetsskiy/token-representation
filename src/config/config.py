@@ -12,6 +12,8 @@ class Config:
     CLICKHOUSE_TEMP_DATABASE = os.getenv('CLICKHOUSE_TEMP_DATABASE', 'temp_processing')
 
     # PostgreSQL Configuration (Storage)
+    # Use connection string if provided, otherwise fall back to individual parameters
+    POSTGRES_CONNECTION_STRING = os.getenv('POSTGRES_CONNECTION_STRING', None)
     POSTGRES_HOST = os.getenv('POSTGRES_HOST', 'localhost')
     POSTGRES_PORT = int(os.getenv('POSTGRES_PORT', '5432'))
     POSTGRES_USER = os.getenv('POSTGRES_USER', 'postgres')

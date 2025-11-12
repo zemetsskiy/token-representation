@@ -22,17 +22,35 @@ class PostgresClient:
     def _connect(self):
         """Establish connection to PostgreSQL."""
         try:
-            self.connection = psycopg2.connect(
-                host=Config.POSTGRES_HOST,
-                port=Config.POSTGRES_PORT,
-                database=Config.POSTGRES_DATABASE,
-                user=Config.POSTGRES_USER,
-                password=Config.POSTGRES_PASSWORD,
-                connect_timeout=10
-            )
+            # Use connection string if provided, otherwise use individual parameters
+            if Config.POSTGRES_CONNECTION_STRING:
+                logger.info('Connecting to PostgreSQL using connection string')
+                self.connection = psycopg2.connect(
+                    Config.POSTGRES_CONNECTION_STRING,
+                    connect_timeout=10
+                )
+                # Extract database name from connection string for logging
+                try:
+                    from urllib.parse import urlparse
+                    parsed = urlparse(Config.POSTGRES_CONNECTION_STRING)
+                    db_info = f'{parsed.hostname}:{parsed.port}/{parsed.path.lstrip("/")}'
+                except:
+                    db_info = 'connection string'
+                logger.info(f'Connected to PostgreSQL at {db_info}')
+            else:
+                logger.info('Connecting to PostgreSQL using individual parameters')
+                self.connection = psycopg2.connect(
+                    host=Config.POSTGRES_HOST,
+                    port=Config.POSTGRES_PORT,
+                    database=Config.POSTGRES_DATABASE,
+                    user=Config.POSTGRES_USER,
+                    password=Config.POSTGRES_PASSWORD,
+                    connect_timeout=10
+                )
+                logger.info(f'Connected to PostgreSQL at {Config.POSTGRES_HOST}:{Config.POSTGRES_PORT}')
+
             self.connection.autocommit = False
             self.cursor = self.connection.cursor(cursor_factory=psycopg2.extras.DictCursor)
-            logger.info(f'Connected to PostgreSQL at {Config.POSTGRES_HOST}:{Config.POSTGRES_PORT}')
         except Exception as e:
             logger.error(f'Failed to connect to PostgreSQL: {e}')
             raise
@@ -89,7 +107,7 @@ class PostgresClient:
             t.chain,
             tm.decimals
         FROM input_tokens t
-        JOIN token_data.token_metrics tm
+        JOIN unverified_tokens tm
             ON tm.contract_address = t.contract_address
             AND tm.chain = t.chain
         WHERE tm.decimals IS NOT NULL
@@ -162,7 +180,7 @@ class PostgresClient:
 
         # Prepare data for insertion
         insert_query = """
-        INSERT INTO token_data.token_metrics (
+        INSERT INTO unverified_tokens (
             contract_address,
             chain,
             decimals,
@@ -280,7 +298,7 @@ class PostgresClient:
         logger.info(f'Upserting {len(df):,} token metrics from {view_source}')
 
         upsert_query = """
-        INSERT INTO token_data.token_metrics (
+        INSERT INTO unverified_tokens (
             contract_address,
             chain,
             decimals,
@@ -377,7 +395,7 @@ class PostgresClient:
             Latest metrics as dict or None
         """
         query = """
-        SELECT * FROM token_data.latest_token_metrics
+        SELECT * FROM latest_unverified_tokens
         WHERE contract_address = %s AND chain = %s
         """
         try:
@@ -398,7 +416,7 @@ class PostgresClient:
             List of token metrics
         """
         query = """
-        SELECT * FROM token_data.latest_token_metrics
+        SELECT * FROM latest_unverified_tokens
         WHERE market_cap_usd > 0
         ORDER BY market_cap_usd DESC
         LIMIT %s
@@ -411,7 +429,7 @@ class PostgresClient:
 
     def get_metrics_count(self) -> int:
         """Get total number of metric records."""
-        query = "SELECT COUNT(*) as count FROM token_data.token_metrics"
+        query = "SELECT COUNT(*) as count FROM unverified_tokens"
         try:
             result = self.execute_query(query)
             return result[0]['count'] if result else 0
@@ -420,15 +438,9 @@ class PostgresClient:
             return 0
 
     def refresh_materialized_views(self):
-        """Refresh all materialized views."""
-        try:
-            logger.info('Refreshing materialized views...')
-            self.cursor.execute('REFRESH MATERIALIZED VIEW token_data.top_tokens_by_market_cap')
-            self.connection.commit()
-            logger.info('Materialized views refreshed successfully')
-        except Exception as e:
-            logger.error(f'Failed to refresh materialized views: {e}')
-            self.connection.rollback()
+        """Refresh all materialized views (currently none for unverified_tokens)."""
+        logger.info('No materialized views to refresh for unverified_tokens')
+        pass
 
     def vacuum_analyze(self):
         """Run VACUUM ANALYZE to optimize table."""
@@ -436,7 +448,7 @@ class PostgresClient:
             logger.info('Running VACUUM ANALYZE...')
             old_autocommit = self.connection.autocommit
             self.connection.autocommit = True
-            self.cursor.execute('VACUUM ANALYZE token_data.token_metrics')
+            self.cursor.execute('VACUUM ANALYZE unverified_tokens')
             self.connection.autocommit = old_autocommit
             logger.info('VACUUM ANALYZE completed')
         except Exception as e:
