@@ -185,35 +185,22 @@ class PostgresClient:
             chain,
             decimals,
             symbol,
+            name,
             price_usd,
             market_cap_usd,
             supply,
-            burned,
-            total_minted,
-            total_burned,
             largest_lp_pool_usd,
             source,
             first_tx_date,
             view_source,
             updated_at
         ) VALUES (
-            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
         )
         """
 
         total_inserted = 0
         update_time = datetime.utcnow()
-
-        # PostgreSQL BIGINT max value
-        BIGINT_MAX = 9223372036854775807
-
-        def safe_int(value, default=0):
-            """Convert to int and cap at BIGINT_MAX to prevent overflow"""
-            try:
-                val = int(value or default)
-                return min(max(val, 0), BIGINT_MAX)
-            except (ValueError, TypeError):
-                return default
 
         try:
             # Step 3: Convert DataFrame to list of tuples, using known decimals
@@ -243,12 +230,10 @@ class PostgresClient:
                     chain,
                     decimals_to_use,
                     row.get('symbol'),
+                    row.get('name'),
                     float(row.get('price_usd', 0) or 0),
                     float(row.get('market_cap_usd', 0) or 0),
                     float(row.get('supply', 0) or 0),
-                    float(row.get('burned', 0) or 0),
-                    safe_int(row.get('total_minted', 0)),
-                    safe_int(row.get('total_burned', 0)),
                     float(row.get('largest_lp_pool_usd', 0) or 0),
                     row.get('source'),
                     row.get('first_tx_date'),
@@ -303,30 +288,26 @@ class PostgresClient:
             chain,
             decimals,
             symbol,
+            name,
             price_usd,
             market_cap_usd,
             supply,
-            burned,
-            total_minted,
-            total_burned,
             largest_lp_pool_usd,
             source,
             first_tx_date,
             view_source,
             updated_at
         ) VALUES (
-            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
         )
         ON CONFLICT (contract_address, chain, updated_at)
         DO UPDATE SET
             decimals = EXCLUDED.decimals,
             symbol = EXCLUDED.symbol,
+            name = EXCLUDED.name,
             price_usd = EXCLUDED.price_usd,
             market_cap_usd = EXCLUDED.market_cap_usd,
             supply = EXCLUDED.supply,
-            burned = EXCLUDED.burned,
-            total_minted = EXCLUDED.total_minted,
-            total_burned = EXCLUDED.total_burned,
             largest_lp_pool_usd = EXCLUDED.largest_lp_pool_usd,
             source = EXCLUDED.source,
             first_tx_date = EXCLUDED.first_tx_date,
@@ -336,17 +317,6 @@ class PostgresClient:
         total_upserted = 0
         update_time = datetime.utcnow()
 
-        # PostgreSQL BIGINT max value
-        BIGINT_MAX = 9223372036854775807
-
-        def safe_int(value, default=0):
-            """Convert to int and cap at BIGINT_MAX to prevent overflow"""
-            try:
-                val = int(value or default)
-                return min(max(val, 0), BIGINT_MAX)
-            except (ValueError, TypeError):
-                return default
-
         try:
             rows = []
             for row in df.iter_rows(named=True):
@@ -355,12 +325,10 @@ class PostgresClient:
                     row.get('chain', row.get('blockchain', 'solana')),
                     row.get('decimals'),
                     row.get('symbol'),
+                    row.get('name'),
                     float(row.get('price_usd', 0) or 0),
                     float(row.get('market_cap_usd', 0) or 0),
                     float(row.get('supply', 0) or 0),
-                    float(row.get('burned', 0) or 0),
-                    safe_int(row.get('total_minted', 0)),
-                    safe_int(row.get('total_burned', 0)),
                     float(row.get('largest_lp_pool_usd', 0) or 0),
                     row.get('source'),
                     row.get('first_tx_date'),
