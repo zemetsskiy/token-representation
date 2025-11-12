@@ -31,7 +31,10 @@ CREATE TABLE IF NOT EXISTS unverified_tokens (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
     -- Metadata
-    view_source VARCHAR(100)
+    view_source VARCHAR(100),
+
+    -- Unique constraint: one record per token per chain
+    CONSTRAINT unique_token_chain UNIQUE (contract_address, chain)
 );
 
 -- Create indexes for better query performance
@@ -83,12 +86,13 @@ CREATE TRIGGER update_unverified_tokens_updated_at_trigger
     EXECUTE FUNCTION update_unverified_tokens_updated_at();
 
 -- Comments
-COMMENT ON TABLE unverified_tokens IS 'Unverified token metrics with minimal required fields';
-COMMENT ON COLUMN unverified_tokens.contract_address IS 'Token contract address';
+COMMENT ON TABLE unverified_tokens IS 'Unverified token metrics with UPSERT logic: one record per (contract_address, chain). On conflict, preserves decimals and first_tx_date, updates all other fields.';
+COMMENT ON COLUMN unverified_tokens.contract_address IS 'Token contract address (unique per chain)';
 COMMENT ON COLUMN unverified_tokens.chain IS 'Chain identifier (solana, ethereum, bsc)';
-COMMENT ON COLUMN unverified_tokens.decimals IS 'Token decimals (6 for USDC, 9 for SOL, 18 for ETH)';
-COMMENT ON COLUMN unverified_tokens.supply IS 'Circulating supply (normalized by decimals)';
-COMMENT ON COLUMN unverified_tokens.largest_lp_pool_usd IS 'Largest liquidity pool TVL in USD';
+COMMENT ON COLUMN unverified_tokens.decimals IS 'Token decimals (preserved on updates, only set once)';
+COMMENT ON COLUMN unverified_tokens.first_tx_date IS 'Date of first transaction (preserved on updates, only set once)';
+COMMENT ON COLUMN unverified_tokens.supply IS 'Circulating supply (normalized by decimals, updated on each run)';
+COMMENT ON COLUMN unverified_tokens.largest_lp_pool_usd IS 'Largest liquidity pool TVL in USD (updated on each run)';
 
 -- Success message
 DO $$

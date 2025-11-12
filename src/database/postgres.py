@@ -150,8 +150,13 @@ class PostgresClient:
         batch_size: int = 1000
     ) -> int:
         """
-        Insert token metrics from Polars DataFrame in batches.
-        Automatically preserves existing decimals values.
+        Upsert token metrics from Polars DataFrame in batches.
+
+        UPSERT logic:
+        - If token (contract_address, chain) exists: UPDATE all fields EXCEPT decimals and first_tx_date
+        - If token doesn't exist: INSERT new record
+        - Preserves existing decimals and first_tx_date values (only set once, never overwritten)
+        - Updates: price_usd, market_cap_usd, supply, largest_lp_pool_usd, symbol, name, view_source, updated_at
 
         Args:
             df: Polars DataFrame with token metrics
@@ -159,9 +164,9 @@ class PostgresClient:
             batch_size: Number of rows per batch
 
         Returns:
-            Number of rows inserted
+            Number of rows upserted
         """
-        logger.info(f'Inserting {len(df):,} token metrics from {view_source}')
+        logger.info(f'Upserting {len(df):,} token metrics from {view_source}')
 
         # Step 1: Get all unique (contract_address, chain) pairs from DataFrame
         unique_tokens = []
@@ -178,8 +183,8 @@ class PostgresClient:
         # Step 2: Fetch known decimals for these tokens (single efficient query)
         known_decimals = self._get_known_decimals(unique_tokens)
 
-        # Prepare data for insertion
-        insert_query = """
+        # Prepare data for insertion with UPSERT logic
+        upsert_query = """
         INSERT INTO unverified_tokens (
             contract_address,
             chain,
@@ -196,6 +201,18 @@ class PostgresClient:
         ) VALUES (
             %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
         )
+        ON CONFLICT (contract_address, chain)
+        DO UPDATE SET
+            decimals = COALESCE(unverified_tokens.decimals, EXCLUDED.decimals),
+            first_tx_date = COALESCE(unverified_tokens.first_tx_date, EXCLUDED.first_tx_date),
+            symbol = EXCLUDED.symbol,
+            name = EXCLUDED.name,
+            price_usd = EXCLUDED.price_usd,
+            market_cap_usd = EXCLUDED.market_cap_usd,
+            supply = EXCLUDED.supply,
+            largest_lp_pool_usd = EXCLUDED.largest_lp_pool_usd,
+            view_source = EXCLUDED.view_source,
+            updated_at = EXCLUDED.updated_at
         """
 
         total_inserted = 0
@@ -244,19 +261,19 @@ class PostgresClient:
             if decimals_new > 0:
                 logger.info(f'  Using new decimals for {decimals_new:,} tokens')
 
-            # Insert in batches
+            # Insert/Update in batches
             for i in range(0, len(rows), batch_size):
                 batch = rows[i:i + batch_size]
-                self.cursor.executemany(insert_query, batch)
+                self.cursor.executemany(upsert_query, batch)
                 self.connection.commit()
                 total_inserted += len(batch)
-                logger.info(f'  Inserted batch {i // batch_size + 1}: {len(batch)} rows (total: {total_inserted:,})')
+                logger.info(f'  Upserted batch {i // batch_size + 1}: {len(batch)} rows (total: {total_inserted:,})')
 
-            logger.info(f'Successfully inserted {total_inserted:,} token metrics')
+            logger.info(f'Successfully upserted {total_inserted:,} token metrics')
             return total_inserted
 
         except Exception as e:
-            logger.error(f'Failed to insert token metrics: {e}', exc_info=True)
+            logger.error(f'Failed to upsert token metrics: {e}', exc_info=True)
             self.connection.rollback()
             raise
 
