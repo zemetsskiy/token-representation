@@ -62,22 +62,22 @@ class DecimalsResolver:
                         self.decimals_cache[mint] = int(decimals)
                         logger.debug(f'Resolved decimals for {mint[:8]}...: {decimals}')
                     elif not account_exists:
-                        # Account doesn't exist on chain - this is normal, use default
-                        logger.debug(f'Account does not exist for {mint[:8]}..., defaulting to 6')
-                        self.decimals_cache.setdefault(mint, 6)
+                        # Account doesn't exist on chain - leave as None
+                        logger.debug(f'Account does not exist for {mint[:8]}..., decimals=None')
+                        self.decimals_cache.setdefault(mint, None)
                     else:
-                        # Account exists but failed to parse - this is unusual
-                        logger.warning(f'Could not parse decimals for {mint}, defaulting to 6')
-                        self.decimals_cache.setdefault(mint, 6)
+                        # Account exists but failed to parse
+                        logger.warning(f'Could not parse decimals for {mint}, decimals=None')
+                        self.decimals_cache.setdefault(mint, None)
             except requests.exceptions.RequestException as e:
                 logger.error(f'RPC request failed: {e}')
                 for mint in batch:
-                    self.decimals_cache.setdefault(mint, 6)
+                    self.decimals_cache.setdefault(mint, None)
         result = {}
         for addr in token_addresses:
             s = addr.decode('utf-8', errors='ignore') if isinstance(addr, (bytes, bytearray)) else str(addr)
             s = s.replace('\x00', '').strip()
-            result[s] = self.decimals_cache.get(s, 6)
+            result[s] = self.decimals_cache.get(s, None)
         logger.info(f'Finished resolving decimals. Total cached: {len(self.decimals_cache)}')
         return result
 

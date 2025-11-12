@@ -320,8 +320,9 @@ class TokenAggregationWorker:
         # Select columns for display
         df_display = df.select([
             'mint',
-            'blockchain',
+            'chain',
             'symbol',
+            'decimals',
             'price_usd',
             'market_cap_usd',
             'supply',
