@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS token_data.token_metrics (
 
     -- Token identification
     contract_address VARCHAR(48) NOT NULL,
-    chain VARCHAR(50) NOT NULL DEFAULT 'solana',
+    chain VARCHAR(50) NOT NULL,
     decimals INTEGER,
 
     -- Token metadata
