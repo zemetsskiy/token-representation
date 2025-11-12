@@ -24,7 +24,6 @@ CREATE TABLE IF NOT EXISTS unverified_tokens (
 
     -- Liquidity data
     largest_lp_pool_usd DOUBLE PRECISION DEFAULT 0,
-    source VARCHAR(100),
 
     -- Temporal data
     first_tx_date TIMESTAMP,
@@ -61,7 +60,6 @@ SELECT DISTINCT ON (contract_address, chain)
     market_cap_usd,
     supply,
     largest_lp_pool_usd,
-    source,
     first_tx_date,
     created_at,
     updated_at,
@@ -91,11 +89,10 @@ COMMENT ON COLUMN unverified_tokens.chain IS 'Chain identifier (solana, ethereum
 COMMENT ON COLUMN unverified_tokens.decimals IS 'Token decimals (6 for USDC, 9 for SOL, 18 for ETH)';
 COMMENT ON COLUMN unverified_tokens.supply IS 'Circulating supply (normalized by decimals)';
 COMMENT ON COLUMN unverified_tokens.largest_lp_pool_usd IS 'Largest liquidity pool TVL in USD';
-COMMENT ON COLUMN unverified_tokens.source IS 'DEX source of largest pool (raydium, orca, uniswap)';
 
 -- Success message
 DO $$
 BEGIN
     RAISE NOTICE '✅ Table unverified_tokens created!';
-    RAISE NOTICE 'Fields: 15 (removed burned, total_minted, total_burned)';
+    RAISE NOTICE 'Fields: 14 (removed burned, total_minted, total_burned, source)';
 END $$;

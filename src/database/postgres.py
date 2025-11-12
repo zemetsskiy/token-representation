@@ -190,12 +190,11 @@ class PostgresClient:
             market_cap_usd,
             supply,
             largest_lp_pool_usd,
-            source,
             first_tx_date,
             view_source,
             updated_at
         ) VALUES (
-            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
         )
         """
 
@@ -235,7 +234,6 @@ class PostgresClient:
                     float(row.get('market_cap_usd', 0) or 0),
                     float(row.get('supply', 0) or 0),
                     float(row.get('largest_lp_pool_usd', 0) or 0),
-                    row.get('source'),
                     row.get('first_tx_date'),
                     view_source,
                     update_time
@@ -293,12 +291,11 @@ class PostgresClient:
             market_cap_usd,
             supply,
             largest_lp_pool_usd,
-            source,
             first_tx_date,
             view_source,
             updated_at
         ) VALUES (
-            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
         )
         ON CONFLICT (contract_address, chain, updated_at)
         DO UPDATE SET
@@ -309,7 +306,6 @@ class PostgresClient:
             market_cap_usd = EXCLUDED.market_cap_usd,
             supply = EXCLUDED.supply,
             largest_lp_pool_usd = EXCLUDED.largest_lp_pool_usd,
-            source = EXCLUDED.source,
             first_tx_date = EXCLUDED.first_tx_date,
             view_source = EXCLUDED.view_source
         """
@@ -330,7 +326,6 @@ class PostgresClient:
                     float(row.get('market_cap_usd', 0) or 0),
                     float(row.get('supply', 0) or 0),
                     float(row.get('largest_lp_pool_usd', 0) or 0),
-                    row.get('source'),
                     row.get('first_tx_date'),
                     view_source,
                     update_time
