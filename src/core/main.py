@@ -9,7 +9,9 @@ from ..processors import (
     SupplyCalculator,
     PriceCalculator,
     LiquidityAnalyzer,
-    FirstTxFinder
+    FirstTxFinder,
+    DecimalsResolver,
+    MetadataFetcher
 )
 
 setup_logging()
@@ -38,6 +40,8 @@ class TokenAggregationWorker:
         self.price_calculator = PriceCalculator(self.db_client)
         self.liquidity_analyzer = LiquidityAnalyzer(self.db_client)
         self.first_tx_finder = FirstTxFinder(self.db_client)
+        self.decimals_resolver = DecimalsResolver()
+        self.metadata_fetcher = MetadataFetcher()
         self.performance_metrics = {}
         self.chunk_size = Config.CHUNK_SIZE
         logger.info(f'Chunk size: {self.chunk_size:,} tokens')
@@ -149,7 +153,35 @@ class TokenAggregationWorker:
         df_prices = self.price_calculator.get_prices_for_chunk(price_data=swap_data['prices'])
         df_chunk = df_chunk.join(df_prices, on='mint', how='left')
 
-        # Step 6: Process pool metrics (uses data from consolidated query - NO query!)
+        # Step 6: Fetch decimals via RPC
+        logger.info(f'  [{chunk_num}] Fetching decimals via RPC...')
+        decimals_map = self.decimals_resolver.resolve_decimals_batch(chunk_mints)
+        df_decimals = pl.DataFrame({
+            'mint': list(decimals_map.keys()),
+            'decimals': list(decimals_map.values())
+        })
+        df_chunk = df_chunk.join(df_decimals, on='mint', how='left')
+
+        # Step 7: Fetch metadata (symbol, name) via Metaplex
+        logger.info(f'  [{chunk_num}] Fetching metadata via Metaplex...')
+        metadata_map = self.metadata_fetcher.resolve_metadata_batch(chunk_mints)
+        metadata_rows = []
+        for mint, (symbol, name, uri) in metadata_map.items():
+            metadata_rows.append({
+                'mint': mint,
+                'symbol': symbol,
+                'name': name
+            })
+        if metadata_rows:
+            df_metadata = pl.DataFrame(metadata_rows)
+            df_chunk = df_chunk.join(df_metadata, on='mint', how='left')
+        else:
+            df_chunk = df_chunk.with_columns([
+                pl.lit(None).cast(pl.Utf8).alias('symbol'),
+                pl.lit(None).cast(pl.Utf8).alias('name')
+            ])
+
+        # Step 8: Process pool metrics (uses data from consolidated query - NO query!)
         logger.info(f'  [{chunk_num}] Processing pool metrics...')
         df_chunk = self._process_pools_and_metrics(df_chunk, swap_data['pool_data'], chunk_num)
 
@@ -163,15 +195,30 @@ class TokenAggregationWorker:
         logger.info(f'  [{chunk_num}] Processing pools and calculating metrics in memory...')
 
         if not pool_data or len(pool_data) == 0:
-            # No pool data - add empty columns
+            # No pool data - add empty liquidity columns only
+            # (supply, burned, market_cap, symbol, name, decimals, chain already exist)
             df_tokens = df_tokens.with_columns([
                 pl.lit(0.0).alias('largest_lp_pool_usd'),
-                pl.lit('').alias('source'),
-                pl.lit(0.0).alias('supply'),
-                pl.lit(0.0).alias('burned'),
-                pl.lit(0.0).alias('market_cap_usd'),
-                pl.lit('solana').alias('blockchain'),
-                pl.lit(None).cast(pl.Utf8).alias('symbol')
+                pl.lit('').alias('source')
+            ])
+            # Recalculate metrics with actual decimals
+            df_tokens = df_tokens.with_columns([
+                pl.col('price_usd').fill_null(0.0),
+                pl.col('total_minted').fill_null(0),
+                pl.col('total_burned').fill_null(0)
+            ])
+            df_tokens = df_tokens.with_columns([
+                ((pl.col('total_minted') - pl.col('total_burned')) /
+                 pl.when(pl.col('decimals').is_not_null())
+                 .then(10.0 ** pl.col('decimals'))
+                 .otherwise(1e9)).alias('supply'),
+                (pl.col('total_burned') /
+                 pl.when(pl.col('decimals').is_not_null())
+                 .then(10.0 ** pl.col('decimals'))
+                 .otherwise(1e9)).alias('burned')
+            ])
+            df_tokens = df_tokens.with_columns([
+                (pl.col('price_usd') * pl.col('supply')).alias('market_cap_usd')
             ])
             return df_tokens
 
@@ -239,10 +286,16 @@ class TokenAggregationWorker:
             pl.col('total_burned').fill_null(0)
         ])
 
-        # Calculate normalized supply (assume decimals = 9 for now)
+        # Calculate normalized supply using actual decimals (default to 9 if missing)
         df_tokens = df_tokens.with_columns([
-            ((pl.col('total_minted') - pl.col('total_burned')) / 1e9).alias('supply'),
-            (pl.col('total_burned') / 1e9).alias('burned')
+            ((pl.col('total_minted') - pl.col('total_burned')) /
+             pl.when(pl.col('decimals').is_not_null())
+             .then(10.0 ** pl.col('decimals'))
+             .otherwise(1e9)).alias('supply'),
+            (pl.col('total_burned') /
+             pl.when(pl.col('decimals').is_not_null())
+             .then(10.0 ** pl.col('decimals'))
+             .otherwise(1e9)).alias('burned')
         ])
 
         # Calculate market cap = price_usd * supply
@@ -250,10 +303,9 @@ class TokenAggregationWorker:
             (pl.col('price_usd') * pl.col('supply')).alias('market_cap_usd')
         ])
 
-        # Add blockchain and symbol columns
+        # Add chain column (symbol and name already added via metadata fetch)
         df_tokens = df_tokens.with_columns([
-            pl.lit('solana').alias('blockchain'),
-            pl.lit(None).cast(pl.Utf8).alias('symbol')
+            pl.lit('solana').alias('chain')
         ])
 
         return df_tokens
