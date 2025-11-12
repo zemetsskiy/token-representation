@@ -196,7 +196,7 @@ class TokenAggregationWorker:
 
         if not pool_data or len(pool_data) == 0:
             # No pool data - add empty liquidity columns only
-            # (supply, market_cap, symbol, name, decimals, chain already exist)
+            # (supply, market_cap, symbol, name, decimals already exist)
             df_tokens = df_tokens.with_columns([
                 pl.lit(0.0).alias('largest_lp_pool_usd')
             ])
@@ -214,6 +214,10 @@ class TokenAggregationWorker:
             ])
             df_tokens = df_tokens.with_columns([
                 (pl.col('price_usd') * pl.col('supply')).alias('market_cap_usd')
+            ])
+            # Add chain column
+            df_tokens = df_tokens.with_columns([
+                pl.lit('solana').alias('chain')
             ])
             return df_tokens
 
