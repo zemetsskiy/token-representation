@@ -241,7 +241,12 @@ class TokenAggregationWorker:
         )
 
         # Prepare decimals map (token decimals + SOL/stablecoin constants)
-        df_token_decimals = df_tokens.select(['mint', 'decimals']).rename({'mint': 'token'})
+        df_token_decimals = (
+            df_tokens
+            .select(['mint', 'decimals'])
+            .rename({'mint': 'token'})
+            .with_columns(pl.col('decimals').cast(pl.Float64))
+        )
         extra_decimals = pl.DataFrame([
             {'token': SOL_ADDRESS, 'decimals': float(SOL_DECIMALS)},
             {'token': STABLECOINS['USDC'], 'decimals': float(STABLECOIN_DECIMALS)},
