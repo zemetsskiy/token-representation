@@ -148,12 +148,7 @@ class TokenAggregationWorker:
         df_first_tx = self.first_tx_finder.get_first_tx_for_chunk(first_swaps_data=swap_data['first_swaps'])
         df_chunk = df_chunk.join(df_first_tx, on='mint', how='left')
 
-        # Step 5: Process prices (uses data from consolidated query - NO query!)
-        logger.info(f'  [{chunk_num}] Processing prices...')
-        df_prices = self.price_calculator.get_prices_for_chunk(price_data=swap_data['prices'])
-        df_chunk = df_chunk.join(df_prices, on='mint', how='left')
-
-        # Step 6: Fetch decimals via RPC
+        # Step 5: Fetch decimals via RPC
         logger.info(f'  [{chunk_num}] Fetching decimals via RPC...')
         decimals_map = self.decimals_resolver.resolve_decimals_batch(chunk_mints)
         df_decimals = pl.DataFrame({
@@ -161,6 +156,14 @@ class TokenAggregationWorker:
             'decimals': list(decimals_map.values())
         })
         df_chunk = df_chunk.join(df_decimals, on='mint', how='left')
+
+        # Step 6: Process prices (uses data from consolidated query - NO query!)
+        logger.info(f'  [{chunk_num}] Processing prices...')
+        df_prices = self.price_calculator.get_prices_for_chunk(
+            price_data=swap_data['prices'],
+            decimals_map=decimals_map
+        )
+        df_chunk = df_chunk.join(df_prices, on='mint', how='left')
 
         # Step 7: Fetch metadata (symbol, name) via Metaplex
         logger.info(f'  [{chunk_num}] Fetching metadata via Metaplex...')

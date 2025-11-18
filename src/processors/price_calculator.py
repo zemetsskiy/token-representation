@@ -8,10 +8,12 @@ logger = logging.getLogger(__name__)
 # Constants
 SOL_ADDRESS = 'So11111111111111111111111111111111111111112'
 SOL_PRICE_USD = 190.0
+SOL_DECIMALS = 9
 STABLECOINS = {
     'USDC': 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
     'USDT': 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB'
 }
+STABLECOIN_DECIMALS = 6
 
 class PriceCalculator:
     """
@@ -24,7 +26,7 @@ class PriceCalculator:
         self.db_client = db_client
         self.sol_price_usd = SOL_PRICE_USD
 
-    def get_prices_for_chunk(self, price_data: List[Dict] = None) -> pl.DataFrame:
+    def get_prices_for_chunk(self, price_data: List[Dict] = None, decimals_map: Dict[str, int] | None = None) -> pl.DataFrame:
         """
         Process price data (provided from consolidated swap query).
         No longer queries the database - uses pre-fetched data.
@@ -45,22 +47,78 @@ class PriceCalculator:
         if price_data:
             df_prices = pl.DataFrame(
                 price_data,
-                schema={'token': pl.Utf8, 'last_price_in_sol': pl.Float64}
+                schema={'token': pl.Utf8, 'price_reference': pl.Utf8, 'raw_price': pl.Float64}
             )
         else:
             df_prices = pl.DataFrame(
-                {'token': [], 'last_price_in_sol': []},
-                schema={'token': pl.Utf8, 'last_price_in_sol': pl.Float64}
+                {'token': [], 'price_reference': [], 'raw_price': []},
+                schema={'token': pl.Utf8, 'price_reference': pl.Utf8, 'raw_price': pl.Float64}
             )
 
         # Rename token column to mint for consistency (always, even if empty)
-        df_prices = df_prices.rename({'token': 'mint', 'last_price_in_sol': 'price_in_sol'})
+        df_prices = df_prices.rename({'token': 'mint'})
 
-        # Fill nulls with 0 and calculate USD price
+        # Attach token decimals from RPC results
+        if decimals_map:
+            df_decimals = pl.DataFrame(
+                {'mint': list(decimals_map.keys()), 'decimals': list(decimals_map.values())},
+                schema={'mint': pl.Utf8, 'decimals': pl.Float64}
+            )
+        else:
+            df_decimals = pl.DataFrame({'mint': [], 'decimals': []}, schema={'mint': pl.Utf8, 'decimals': pl.Float64})
+
+        if df_decimals.height > 0:
+            df_prices = df_prices.join(df_decimals, on='mint', how='left')
+        else:
+            df_prices = df_prices.with_columns(pl.lit(None).cast(pl.Float64).alias('decimals'))
+
         df_prices = df_prices.with_columns([
-            pl.col('price_in_sol').fill_null(0),
-            (pl.col('price_in_sol').fill_null(0) * SOL_PRICE_USD).alias('price_usd')
+            pl.col('decimals').alias('token_decimals')
         ])
+
+        # Reference coin decimals (SOL or stablecoin)
+        stable_values = list(STABLECOINS.values())
+        df_prices = df_prices.with_columns([
+            pl.when(pl.col('price_reference') == SOL_ADDRESS)
+            .then(float(SOL_DECIMALS))
+            .when(pl.col('price_reference').is_in(stable_values))
+            .then(float(STABLECOIN_DECIMALS))
+            .otherwise(None)
+            .alias('reference_decimals')
+        ])
+
+        # Adjust raw price using token/reference decimals; missing decimals -> null price
+        df_prices = df_prices.with_columns([
+            pl.when(
+                pl.col('raw_price').is_not_null()
+                & pl.col('token_decimals').is_not_null()
+                & pl.col('reference_decimals').is_not_null()
+            )
+            .then(
+                pl.col('raw_price') * pl.pow(10.0, pl.col('token_decimals') - pl.col('reference_decimals'))
+            )
+            .otherwise(None)
+            .alias('price_per_reference')
+        ])
+
+        # Derive price_in_sol and price_usd depending on reference asset
+        df_prices = df_prices.with_columns([
+            pl.when(pl.col('price_reference') == SOL_ADDRESS)
+            .then(pl.col('price_per_reference'))
+            .otherwise(None)
+            .alias('price_in_sol')
+        ])
+
+        df_prices = df_prices.with_columns([
+            pl.when(pl.col('price_reference') == SOL_ADDRESS)
+            .then(pl.col('price_in_sol') * SOL_PRICE_USD)
+            .when(pl.col('price_reference').is_in(stable_values))
+            .then(pl.col('price_per_reference'))
+            .otherwise(None)
+            .alias('price_usd')
+        ])
+
+        df_prices = df_prices.select(['mint', 'price_in_sol', 'price_usd'])
 
         logger.info(f'Prices fetched and processed for {len(df_prices)} tokens')
         return df_prices

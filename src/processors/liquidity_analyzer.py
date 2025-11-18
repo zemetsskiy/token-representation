@@ -67,10 +67,11 @@ class LiquidityAnalyzer:
                 })
 
             # Price data (if available)
-            if row.get('latest_price_sol'):
+            if row.get('latest_price_raw') and row.get('latest_price_reference'):
                 prices.append({
                     'token': token,
-                    'last_price_in_sol': row['latest_price_sol']
+                    'price_reference': row['latest_price_reference'],
+                    'raw_price': row['latest_price_raw']
                 })
 
         logger.info(f'Extracted: {len(first_swaps)} first swaps, {len(pool_data)} pools, {len(prices)} prices')
@@ -151,10 +152,22 @@ class LiquidityAnalyzer:
                 CASE
                     WHEN quote_coin = '{SOL_ADDRESS}' THEN quote_coin_amount / NULLIF(base_coin_amount, 0)
                     WHEN base_coin = '{SOL_ADDRESS}' THEN base_coin_amount / NULLIF(quote_coin_amount, 0)
-                    ELSE 0
+                    WHEN quote_coin IN ('{usdc}', '{usdt}') THEN quote_coin_amount / NULLIF(base_coin_amount, 0)
+                    WHEN base_coin IN ('{usdc}', '{usdt}') THEN base_coin_amount / NULLIF(quote_coin_amount, 0)
+                    ELSE NULL
                 END,
                 block_time
-            ) AS latest_price_sol
+            ) AS latest_price_raw,
+            argMax(
+                CASE
+                    WHEN quote_coin = '{SOL_ADDRESS}' THEN '{SOL_ADDRESS}'
+                    WHEN base_coin = '{SOL_ADDRESS}' THEN '{SOL_ADDRESS}'
+                    WHEN quote_coin IN ('{usdc}', '{usdt}') THEN quote_coin
+                    WHEN base_coin IN ('{usdc}', '{usdt}') THEN base_coin
+                    ELSE NULL
+                END,
+                block_time
+            ) AS latest_price_reference
         FROM (
             SELECT * FROM base_side
             UNION ALL
@@ -194,7 +207,7 @@ class LiquidityAnalyzer:
                 else:
                     quote_coin_str = str(quote_coin_value).rstrip('\x00')
 
-                decoded_result.append({
+                decoded_row = {
                     'token': token_str,
                     'first_swap': row['first_swap'],
                     'latest_source': row['latest_source'],
@@ -202,8 +215,10 @@ class LiquidityAnalyzer:
                     'latest_quote_coin': quote_coin_str,
                     'latest_base_balance': row['latest_base_balance'],
                     'latest_quote_balance': row['latest_quote_balance'],
-                    'latest_price_sol': row['latest_price_sol']
-                })
+                    'latest_price_raw': row['latest_price_raw'],
+                    'latest_price_reference': row['latest_price_reference']
+                }
+                decoded_result.append(decoded_row)
 
             return decoded_result
         except Exception as e:
