@@ -92,7 +92,6 @@ class LiquidityAnalyzer:
         usdt = STABLECOINS['USDT']
 
         query = f"""
-        /* Optimized: avoid full scan + arrayJoin; prefilter by chunk in PREWHERE and split by side */
         WITH
         base_side AS (
             SELECT

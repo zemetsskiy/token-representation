@@ -1,4 +1,5 @@
 import logging
+import math
 import time
 from typing import Dict
 import polars as pl
@@ -20,10 +21,13 @@ logger = logging.getLogger(__name__)
 # Constants
 SOL_ADDRESS = 'So11111111111111111111111111111111111111112'
 SOL_PRICE_USD = 190.0
+SOL_DECIMALS = 9
 STABLECOINS = {
     'USDC': 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
     'USDT': 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB'
 }
+STABLECOIN_DECIMALS = 6
+LOG_10 = math.log(10.0)
 
 
 class TokenAggregationWorker:
@@ -236,16 +240,51 @@ class TokenAggregationWorker:
             }
         )
 
-        # Calculate liquidity_usd for each pool
+        # Prepare decimals map (token decimals + SOL/stablecoin constants)
+        df_token_decimals = df_tokens.select(['mint', 'decimals']).rename({'mint': 'token'})
+        extra_decimals = pl.DataFrame([
+            {'token': SOL_ADDRESS, 'decimals': float(SOL_DECIMALS)},
+            {'token': STABLECOINS['USDC'], 'decimals': float(STABLECOIN_DECIMALS)},
+            {'token': STABLECOINS['USDT'], 'decimals': float(STABLECOIN_DECIMALS)}
+        ])
+        df_token_decimals = pl.concat([df_token_decimals, extra_decimals])
+        df_token_decimals = df_token_decimals.unique(subset=['token'], keep='last')
+
+        base_decimals = df_token_decimals.rename({'token': 'base_coin', 'decimals': 'base_decimals'})
+        quote_decimals = df_token_decimals.rename({'token': 'quote_coin', 'decimals': 'quote_decimals'})
+
+        df_pools = df_pools.join(base_decimals, on='base_coin', how='left')
+        df_pools = df_pools.join(quote_decimals, on='quote_coin', how='left')
+
+        # Normalize balances by decimals
+        df_pools = df_pools.with_columns([
+            pl.when(pl.col('base_decimals').is_not_null())
+            .then(pl.col('last_base_balance') / ((pl.col('base_decimals') * LOG_10).exp()))
+            .otherwise(None)
+            .alias('normalized_base_balance'),
+            pl.when(pl.col('quote_decimals').is_not_null())
+            .then(pl.col('last_quote_balance') / ((pl.col('quote_decimals') * LOG_10).exp()))
+            .otherwise(None)
+            .alias('normalized_quote_balance')
+        ])
+
+        df_pools = df_pools.with_columns([
+            pl.col('normalized_base_balance').fill_null(0.0),
+            pl.col('normalized_quote_balance').fill_null(0.0)
+        ])
+
+        stable_values = list(STABLECOINS.values())
+
+        # Calculate liquidity_usd for each pool using normalized balances
         df_pools = df_pools.with_columns([
             pl.when(pl.col('base_coin') == SOL_ADDRESS)
-            .then(pl.col('last_base_balance') * SOL_PRICE_USD * 2.0)
+            .then(pl.col('normalized_base_balance') * SOL_PRICE_USD * 2.0)
             .when(pl.col('quote_coin') == SOL_ADDRESS)
-            .then(pl.col('last_quote_balance') * SOL_PRICE_USD * 2.0)
-            .when(pl.col('base_coin').is_in(list(STABLECOINS.values())))
-            .then(pl.col('last_base_balance') * 2.0)
-            .when(pl.col('quote_coin').is_in(list(STABLECOINS.values())))
-            .then(pl.col('last_quote_balance') * 2.0)
+            .then(pl.col('normalized_quote_balance') * SOL_PRICE_USD * 2.0)
+            .when(pl.col('base_coin').is_in(stable_values))
+            .then(pl.col('normalized_base_balance') * 2.0)
+            .when(pl.col('quote_coin').is_in(stable_values))
+            .then(pl.col('normalized_quote_balance') * 2.0)
             .otherwise(0.0)
             .alias('liquidity_usd')
         ])
