@@ -1,4 +1,5 @@
 import logging
+import math
 from typing import List, Dict
 import polars as pl
 from ..database import ClickHouseClient
@@ -7,7 +8,7 @@ logger = logging.getLogger(__name__)
 
 # Constants
 SOL_ADDRESS = 'So11111111111111111111111111111111111111112'
-SOL_PRICE_USD = 190.0
+SOL_PRICE_USD = 130.0
 SOL_DECIMALS = 9
 STABLECOINS = {
     'USDC': 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
@@ -88,6 +89,7 @@ class PriceCalculator:
         ])
 
         # Adjust raw price using token/reference decimals; missing decimals -> null price
+        log10 = math.log(10.0)
         df_prices = df_prices.with_columns([
             pl.when(
                 pl.col('raw_price').is_not_null()
@@ -95,7 +97,7 @@ class PriceCalculator:
                 & pl.col('reference_decimals').is_not_null()
             )
             .then(
-                pl.col('raw_price') * pl.pow(10.0, pl.col('token_decimals') - pl.col('reference_decimals'))
+                pl.col('raw_price') * ((pl.col('token_decimals') - pl.col('reference_decimals')) * log10).exp()
             )
             .otherwise(None)
             .alias('price_per_reference')

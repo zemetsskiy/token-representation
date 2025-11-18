@@ -207,6 +207,14 @@ class LiquidityAnalyzer:
                 else:
                     quote_coin_str = str(quote_coin_value).rstrip('\x00')
 
+                price_reference_value = row['latest_price_reference']
+                if isinstance(price_reference_value, bytes):
+                    price_reference_str = price_reference_value.decode('utf-8').rstrip('\x00')
+                else:
+                    price_reference_str = (
+                        str(price_reference_value).rstrip('\x00') if price_reference_value is not None else None
+                    )
+
                 decoded_row = {
                     'token': token_str,
                     'first_swap': row['first_swap'],
@@ -216,7 +224,7 @@ class LiquidityAnalyzer:
                     'latest_base_balance': row['latest_base_balance'],
                     'latest_quote_balance': row['latest_quote_balance'],
                     'latest_price_raw': row['latest_price_raw'],
-                    'latest_price_reference': row['latest_price_reference']
+                    'latest_price_reference': price_reference_str
                 }
                 decoded_result.append(decoded_row)
 
