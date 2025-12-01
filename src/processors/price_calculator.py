@@ -8,7 +8,7 @@ logger = logging.getLogger(__name__)
 
 # Constants
 SOL_ADDRESS = 'So11111111111111111111111111111111111111112'
-SOL_PRICE_USD = 130.0
+# SOL price is fetched from Redis at runtime - no hardcoded fallback
 SOL_DECIMALS = 9
 STABLECOINS = {
     'USDC': 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
@@ -25,7 +25,7 @@ class PriceCalculator:
 
     def __init__(self, db_client: ClickHouseClient):
         self.db_client = db_client
-        self.sol_price_usd = SOL_PRICE_USD
+        self.sol_price_usd = None  # Must be set via set_sol_price() before use
 
     def get_prices_for_chunk(self, price_data: List[Dict] = None, decimals_map: Dict[str, int] | None = None) -> pl.DataFrame:
         """

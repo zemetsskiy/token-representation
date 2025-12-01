@@ -11,7 +11,8 @@ STABLECOINS = {
     'USDT': 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB'
 }
 SOL_ADDRESS = 'So11111111111111111111111111111111111111112'
-SOL_PRICE_USD = 190.0
+# SOL price is fetched from Redis at runtime - no hardcoded fallback
+
 
 class LiquidityAnalyzer:
     """
@@ -22,7 +23,7 @@ class LiquidityAnalyzer:
 
     def __init__(self, db_client: ClickHouseClient):
         self.db_client = db_client
-        self.sol_price_usd = SOL_PRICE_USD
+        self.sol_price_usd = None  # Must be set via set_sol_price() before use
 
     def get_comprehensive_swap_data_for_chunk(self) -> Dict[str, List[Dict]]:
         """
@@ -183,11 +184,11 @@ class LiquidityAnalyzer:
                 min(block_time) as first_swap_time,
                 -- Liquidity Score Calculation (Approximate USD value of the Reference Side)
                 -- We use this ONLY for ranking pools, so exact precision isn't critical, but order is.
-                -- SOL = 9 decimals, Price ~$190
+                -- SOL = 9 decimals, price from Redis
                 -- Stable = 6 decimals, Price $1
                 argMax(
                     CASE
-                        WHEN ref_type = 'SOL' THEN (ref_balance_raw / 1e9) * {SOL_PRICE_USD}
+                        WHEN ref_type = 'SOL' THEN (ref_balance_raw / 1e9) * {self.sol_price_usd}
                         WHEN ref_type = 'STABLE' THEN (ref_balance_raw / 1e6)
                         ELSE 0
                     END,

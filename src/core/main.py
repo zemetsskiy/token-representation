@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 # Constants
 SOL_ADDRESS = 'So11111111111111111111111111111111111111112'
-SOL_PRICE_USD = 190.0
+# SOL price is fetched from Redis at runtime - no hardcoded fallback
 SOL_DECIMALS = 9
 STABLECOINS = {
     'USDC': 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
@@ -40,28 +40,22 @@ class TokenAggregationWorker:
         logger.info('Initializing Token Aggregation Worker (Chunk-Optimized)')
         self.db_client = get_db_client()
         
-        # Initialize Redis Client
+        # Initialize Redis Client (REQUIRED for live SOL price)
         from ..database.redis_client import RedisClient
         self.redis_client = RedisClient()
-        
-        # Determine SOL Price
-        sol_price = Config.SOL_PRICE_USD
-        redis_price = self.redis_client.get_sol_price()
-        
-        if redis_price:
-            logger.info(f"Using live SOL price from Redis: ${redis_price:.2f}")
-            sol_price = redis_price
-        else:
-            logger.warning(f"Using configured constant SOL price: ${sol_price:.2f}")
+
+        # Get SOL Price from Redis (REQUIRED - no fallback)
+        self.sol_price_usd = self.redis_client.get_sol_price()
+        logger.info(f"Using live SOL price from Redis: ${self.sol_price_usd:.2f}")
 
         self.token_discovery = TokenDiscovery(self.db_client)
         self.supply_calculator = SupplyCalculator(self.db_client)
-        
+
         self.price_calculator = PriceCalculator(self.db_client)
-        self.price_calculator.set_sol_price(sol_price)
-        
+        self.price_calculator.set_sol_price(self.sol_price_usd)
+
         self.liquidity_analyzer = LiquidityAnalyzer(self.db_client)
-        self.liquidity_analyzer.set_sol_price(sol_price)
+        self.liquidity_analyzer.set_sol_price(self.sol_price_usd)
         
         self.first_tx_finder = FirstTxFinder(self.db_client)
         self.decimals_resolver = DecimalsResolver()
@@ -301,11 +295,12 @@ class TokenAggregationWorker:
         stable_values = list(STABLECOINS.values())
 
         # Calculate liquidity_usd for each pool using normalized balances
+        # Use live SOL price from Redis (stored in self.sol_price_usd)
         df_pools = df_pools.with_columns([
             pl.when(pl.col('base_coin') == SOL_ADDRESS)
-            .then(pl.col('normalized_base_balance') * SOL_PRICE_USD * 2.0)
+            .then(pl.col('normalized_base_balance') * self.sol_price_usd * 2.0)
             .when(pl.col('quote_coin') == SOL_ADDRESS)
-            .then(pl.col('normalized_quote_balance') * SOL_PRICE_USD * 2.0)
+            .then(pl.col('normalized_quote_balance') * self.sol_price_usd * 2.0)
             .when(pl.col('base_coin').is_in(stable_values))
             .then(pl.col('normalized_base_balance') * 2.0)
             .when(pl.col('quote_coin').is_in(stable_values))

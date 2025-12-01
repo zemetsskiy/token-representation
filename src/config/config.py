@@ -39,7 +39,7 @@ class Config:
     # Constants
     STABLECOINS = {'USDC': 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', 'USDT': 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB'}
     SOL_ADDRESS = 'So11111111111111111111111111111111111111112'
-    SOL_PRICE_USD = 188
+    # SOL_PRICE_USD removed - must be fetched from Redis at runtime
     
     @classmethod
     def validate(cls):
