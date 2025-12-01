@@ -131,10 +131,10 @@ class PriceCalculator:
                 & pl.col('reference_decimals').is_not_null()
             )
             .then(
-                (pl.col('reference_balance_raw') / pl.col('token_balance_raw')) * 
-                ((pl.col('token_decimals') - pl.col('reference_decimals')) * log10).exp()
+                (pl.col('reference_balance_raw') / pl.col('token_balance_raw')) *
+                (10.0 ** (pl.col('token_decimals') - pl.col('reference_decimals')))
             )
-            .otherwise(None)
+            .otherwise(pl.lit(None, dtype=pl.Float64))
             .alias('price_per_reference')
         ])
 
