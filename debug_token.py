@@ -223,14 +223,56 @@ def debug_token(token_address: str, sol_price_usd: float = 235.0):
     print(f"Found {len(results)} unique pools")
     print()
 
-    for i, row in enumerate(results[:5]):
-        print(f"Pool {i+1}:")
-        print(f"  Source: {row['source']}")
-        print(f"  Base: {row['base_coin'][:20]}...")
-        print(f"  Quote: {row['quote_coin'][:20]}...")
-        print(f"  Latest Base Balance: {row['latest_base_bal']:,.0f}")
-        print(f"  Latest Quote Balance: {row['latest_quote_bal']:,.0f}")
-        print(f"  Liquidity Score USD: ${row['liquidity_score_usd']:,.2f}")
+    # Fetch token decimals once for price calculations
+    print("Fetching token decimals from RPC...")
+    token_decimals = fetch_token_decimals(token_address)
+    print(f"Token decimals: {token_decimals}")
+    print()
+
+    for i, row in enumerate(results[:10]):
+        # Clean binary strings
+        base_coin_raw = row['base_coin']
+        quote_coin_raw = row['quote_coin']
+        base_coin_str = base_coin_raw.decode('utf-8').rstrip('\x00') if isinstance(base_coin_raw, bytes) else str(base_coin_raw).rstrip('\x00')
+        quote_coin_str = quote_coin_raw.decode('utf-8').rstrip('\x00') if isinstance(quote_coin_raw, bytes) else str(quote_coin_raw).rstrip('\x00')
+
+        base_bal = row['latest_base_bal']
+        quote_bal = row['latest_quote_bal']
+
+        # Determine token vs reference
+        if base_coin_str == token_address:
+            token_balance = base_bal
+            ref_balance = quote_bal
+            ref_coin = quote_coin_str
+        else:
+            token_balance = quote_bal
+            ref_balance = base_bal
+            ref_coin = base_coin_str
+
+        # Determine reference decimals
+        if ref_coin == SOL_ADDRESS:
+            ref_decimals = 9
+            ref_price_usd = sol_price_usd
+        else:
+            ref_decimals = 6
+            ref_price_usd = 1.0
+
+        # Calculate price
+        token_normalized = token_balance / (10 ** token_decimals)
+        ref_normalized = ref_balance / (10 ** ref_decimals)
+
+        if token_normalized > 0:
+            price_usd = (ref_normalized / token_normalized) * ref_price_usd
+        else:
+            price_usd = 0
+
+        # Calculate liquidity (reference side * 2)
+        liquidity_usd = ref_normalized * ref_price_usd * 2
+
+        print(f"Pool {i+1}: {row['source']}")
+        print(f"  Base: {base_coin_str[:16]}... | Quote: {quote_coin_str[:16]}...")
+        print(f"  Token Balance: {token_normalized:,.2f} | Ref Balance: {ref_normalized:,.2f}")
+        print(f"  Price USD: ${price_usd:.6f} | Liquidity USD: ${liquidity_usd:,.2f}")
         print()
 
     # 3. Price calculation for best pool
