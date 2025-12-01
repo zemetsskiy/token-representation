@@ -137,62 +137,41 @@ class LiquidityAnalyzer:
 
         query = f"""
         WITH
-        -- 1. Unify swaps: normalize token/reference amounts for VWAP calculation
+        -- 1. Unify swaps in SINGLE scan using conditional logic
+        -- OPTIMIZATION: block_time filter in PREWHERE reduces data scan significantly
         unified_swaps AS (
             SELECT
-                base_coin AS token,
+                -- Token is whichever side is in our chunk (not SOL/STABLE)
+                if(base_coin IN (SELECT mint FROM {temp_db}.chunk_tokens), base_coin, quote_coin) AS token,
                 source,
                 base_coin,
                 quote_coin,
                 block_time,
-                -- Token amount (the token we're pricing)
-                base_coin_amount AS token_amount,
-                -- Reference amount (SOL or stablecoin)
-                quote_coin_amount AS ref_amount,
-                -- Reference type for USD conversion
-                CASE
-                    WHEN quote_coin = '{SOL_ADDRESS}' THEN 'SOL'
-                    WHEN quote_coin IN ('{usdc}', '{usdt}') THEN 'STABLE'
-                    ELSE 'OTHER'
-                END as ref_type,
-                -- Pool balances for liquidity calculation
-                base_pool_balance_after,
-                quote_pool_balance_after,
-                quote_pool_balance_after AS ref_balance_raw
-            FROM solana.swaps
-            PREWHERE
-                base_coin IN (SELECT mint FROM {temp_db}.chunk_tokens)
-                AND (quote_coin = '{SOL_ADDRESS}' OR quote_coin IN ('{usdc}', '{usdt}'))
-            WHERE source IN ({allowed_sources_sql})
-              AND base_coin_amount > 0
-              AND quote_coin_amount > 0
-
-            UNION ALL
-
-            SELECT
-                quote_coin AS token,
-                source,
-                base_coin,
-                quote_coin,
-                block_time,
-                -- Token amount (the token we're pricing)
-                quote_coin_amount AS token_amount,
-                -- Reference amount (SOL or stablecoin)
-                base_coin_amount AS ref_amount,
+                -- Token amount depends on which side the token is
+                if(base_coin IN (SELECT mint FROM {temp_db}.chunk_tokens), base_coin_amount, quote_coin_amount) AS token_amount,
+                -- Reference amount is the other side
+                if(base_coin IN (SELECT mint FROM {temp_db}.chunk_tokens), quote_coin_amount, base_coin_amount) AS ref_amount,
                 -- Reference type
-                CASE
-                    WHEN base_coin = '{SOL_ADDRESS}' THEN 'SOL'
-                    WHEN base_coin IN ('{usdc}', '{usdt}') THEN 'STABLE'
-                    ELSE 'OTHER'
-                END as ref_type,
+                multiIf(
+                    base_coin = '{SOL_ADDRESS}' OR quote_coin = '{SOL_ADDRESS}', 'SOL',
+                    base_coin IN ('{usdc}', '{usdt}') OR quote_coin IN ('{usdc}', '{usdt}'), 'STABLE',
+                    'OTHER'
+                ) AS ref_type,
                 -- Pool balances
                 base_pool_balance_after,
                 quote_pool_balance_after,
-                base_pool_balance_after AS ref_balance_raw
+                -- Reference balance for liquidity
+                if(base_coin IN (SELECT mint FROM {temp_db}.chunk_tokens), quote_pool_balance_after, base_pool_balance_after) AS ref_balance_raw
             FROM solana.swaps
             PREWHERE
-                quote_coin IN (SELECT mint FROM {temp_db}.chunk_tokens)
-                AND (base_coin = '{SOL_ADDRESS}' OR base_coin IN ('{usdc}', '{usdt}'))
+                -- Time filter: we only need last 7 days for VWAP + last trade
+                block_time >= now() - INTERVAL 7 DAY
+                -- Token filter: either base or quote is in our chunk
+                AND (
+                    (base_coin IN (SELECT mint FROM {temp_db}.chunk_tokens) AND (quote_coin = '{SOL_ADDRESS}' OR quote_coin IN ('{usdc}', '{usdt}')))
+                    OR
+                    (quote_coin IN (SELECT mint FROM {temp_db}.chunk_tokens) AND (base_coin = '{SOL_ADDRESS}' OR base_coin IN ('{usdc}', '{usdt}')))
+                )
             WHERE source IN ({allowed_sources_sql})
               AND base_coin_amount > 0
               AND quote_coin_amount > 0
