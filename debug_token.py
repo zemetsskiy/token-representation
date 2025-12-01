@@ -8,6 +8,7 @@ Example: python debug_token.py AhhdRu5YZdjVkKR3wbnUDaymVQL2ucjMQ63sZ3LFHsch
 """
 
 import sys
+import requests
 from pathlib import Path
 
 # Setup paths
@@ -19,6 +20,35 @@ from src.config import Config, setup_logging
 from src.database import get_db_client
 
 setup_logging()
+
+
+def fetch_token_decimals(token_address: str) -> int:
+    """Fetch token decimals from Solana RPC."""
+    rpc_url = Config.SOLANA_HTTP_RPC_URL
+    if not rpc_url:
+        print("WARNING: SOLANA_HTTP_RPC_URL not set, using default 6 decimals")
+        return 6
+
+    try:
+        payload = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "getAccountInfo",
+            "params": [token_address, {"encoding": "jsonParsed"}]
+        }
+        response = requests.post(rpc_url, json=payload, timeout=10)
+        result = response.json()
+
+        if result.get('result') and result['result'].get('value'):
+            data = result['result']['value'].get('data')
+            if isinstance(data, dict) and data.get('parsed'):
+                decimals = data['parsed'].get('info', {}).get('decimals')
+                if decimals is not None:
+                    return int(decimals)
+        return 6  # default
+    except Exception as e:
+        print(f"WARNING: Failed to fetch decimals: {e}")
+        return 6
 
 # Constants
 SOL_ADDRESS = 'So11111111111111111111111111111111111111112'
@@ -225,16 +255,31 @@ def debug_token(token_address: str, sol_price_usd: float = 235.0):
         print()
 
         # Determine which is the token and which is reference
-        if base_coin == token_address:
+        # Handle binary strings from ClickHouse
+        base_coin_str = base_coin.decode('utf-8').rstrip('\x00') if isinstance(base_coin, bytes) else str(base_coin).rstrip('\x00')
+        quote_coin_str = quote_coin.decode('utf-8').rstrip('\x00') if isinstance(quote_coin, bytes) else str(quote_coin).rstrip('\x00')
+
+        print(f"Base Coin (cleaned): {base_coin_str}")
+        print(f"Quote Coin (cleaned): {quote_coin_str}")
+        print(f"Looking for token: {token_address}")
+        print()
+
+        if base_coin_str == token_address:
             token_balance = base_bal
             ref_balance = quote_bal
-            ref_coin = quote_coin
-            token_decimals = 6  # assume, should fetch from RPC
+            ref_coin = quote_coin_str
+            print("TOKEN is BASE, REFERENCE is QUOTE")
         else:
             token_balance = quote_bal
             ref_balance = base_bal
-            ref_coin = base_coin
-            token_decimals = 6
+            ref_coin = base_coin_str
+            print("TOKEN is QUOTE, REFERENCE is BASE")
+
+        # Fetch real decimals from RPC
+        print()
+        print("Fetching token decimals from RPC...")
+        token_decimals = fetch_token_decimals(token_address)
+        print(f"Token decimals from RPC: {token_decimals}")
 
         # Determine reference decimals
         if ref_coin == SOL_ADDRESS:
