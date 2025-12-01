@@ -28,15 +28,15 @@ class LiquidityAnalyzer:
     def get_comprehensive_swap_data_for_chunk(self) -> Dict[str, List[Dict]]:
         """
         Get ALL swap-related data for tokens in chunk_tokens table using ONE powerful query.
-        This consolidates: first_swap dates, pool metrics, and price data.
+        This consolidates: first_swap dates, pool metrics, and VWAP price data.
 
         Returns:
             Dict with keys:
                 - 'pool_data': List of pool metrics
                 - 'first_swaps': List of first swap dates
-                - 'prices': List of price data
+                - 'prices': List of VWAP price data with method info
         """
-        logger.info('Fetching comprehensive swap data from chunk_tokens table (1 CONSOLIDATED query)')
+        logger.info('Fetching comprehensive swap data from chunk_tokens table (1 CONSOLIDATED query with VWAP)')
 
         comprehensive_data = self._get_comprehensive_swap_data()
 
@@ -46,6 +46,9 @@ class LiquidityAnalyzer:
         pool_data = []
         first_swaps = []
         prices = []
+
+        # Track price method distribution for logging
+        price_methods = {}
 
         for row in comprehensive_data:
             token = row['token']
@@ -64,22 +67,38 @@ class LiquidityAnalyzer:
                     'base_coin': row['latest_base_coin'],
                     'quote_coin': row['latest_quote_coin'],
                     'last_base_balance': row['latest_base_balance'],
-                    'last_quote_balance': row['latest_quote_balance']
+                    'last_quote_balance': row['latest_quote_balance'],
+                    'liquidity_usd': row.get('liquidity_usd', 0)
                 })
 
-            # Price data (now based on Deepest Pool Reserves)
-            if row.get('latest_price_reference'):
+            # Price data - now using VWAP from trade amounts
+            if row.get('price_raw') and row['price_raw'] > 0:
+                price_method = row.get('price_method', 'UNKNOWN')
+                price_methods[price_method] = price_methods.get(price_method, 0) + 1
+
                 prices.append({
                     'token': token,
                     'price_reference': row['latest_price_reference'],
-                    # Pass reserves for calculation
+                    'price_reference_type': row.get('price_reference_type', 'STABLE'),
+                    'price_raw': row['price_raw'],  # VWAP price in reference units
+                    'price_method': price_method,
+                    # Keep pool info for liquidity calculation
                     'base_coin': row['latest_base_coin'],
                     'quote_coin': row['latest_quote_coin'],
                     'base_balance': row['latest_base_balance'],
-                    'quote_balance': row['latest_quote_balance']
+                    'quote_balance': row['latest_quote_balance'],
+                    # Trade activity info
+                    'trades_5m': row.get('trades_5m', 0),
+                    'trades_1h': row.get('trades_1h', 0),
+                    'trades_24h': row.get('trades_24h', 0),
                 })
 
-        logger.info(f'Extracted: {len(first_swaps)} first swaps, {len(pool_data)} pools, {len(prices)} prices')
+        # Log price method distribution
+        if price_methods:
+            method_str = ', '.join([f'{k}: {v}' for k, v in sorted(price_methods.items())])
+            logger.info(f'Price methods used: {method_str}')
+
+        logger.info(f'Extracted: {len(first_swaps)} first swaps, {len(pool_data)} pools, {len(prices)} VWAP prices')
 
         return {
             'pool_data': pool_data,
@@ -89,17 +108,15 @@ class LiquidityAnalyzer:
 
     def _get_comprehensive_swap_data(self) -> List[Dict]:
         """
-        CONSOLIDATED QUERY: Get ALL swap data (first_swap, pools, prices) in ONE query.
-        Uses ARRAY JOIN for maximum performance instead of UNION ALL.
+        CONSOLIDATED QUERY: Get ALL swap data (first_swap, pools, VWAP prices) in ONE query.
+        Uses Trade-Based VWAP pricing with cascading fallback for accuracy.
         """
         temp_db = Config.CLICKHOUSE_TEMP_DATABASE
         usdc = STABLECOINS['USDC']
         usdt = STABLECOINS['USDT']
 
-        # ONLY include direct DEX sources with accurate pool balances
-        # Exclude all aggregators (jupiter*, raydium_route*) as they don't have real per-pool balances
+        # ONLY include direct DEX sources - exclude aggregators
         allowed_sources = [
-            # Direct DEX sources only
             'pumpfun_bondingcurve',
             'raydium_swap_v4',
             'raydium_swap_cpmm',
@@ -120,41 +137,35 @@ class LiquidityAnalyzer:
 
         query = f"""
         WITH
-        -- 1. Unify base and quote side swaps into a single stream of "Token + Pool" events
-        -- IMPORTANT: Exclude multi-hop/routing sources as they don't have real pool balances
+        -- 1. Unify swaps: normalize token/reference amounts for VWAP calculation
         unified_swaps AS (
             SELECT
                 base_coin AS token,
                 source,
                 base_coin,
                 quote_coin,
-                base_pool_balance_after,
-                quote_pool_balance_after,
                 block_time,
-                -- Identify the reference asset (money) in this pair
+                -- Token amount (the token we're pricing)
+                base_coin_amount AS token_amount,
+                -- Reference amount (SOL or stablecoin)
+                quote_coin_amount AS ref_amount,
+                -- Reference type for USD conversion
                 CASE
                     WHEN quote_coin = '{SOL_ADDRESS}' THEN 'SOL'
                     WHEN quote_coin IN ('{usdc}', '{usdt}') THEN 'STABLE'
-                    WHEN base_coin = '{SOL_ADDRESS}' THEN 'SOL'
-                    WHEN base_coin IN ('{usdc}', '{usdt}') THEN 'STABLE'
                     ELSE 'OTHER'
                 END as ref_type,
-                -- Get the raw balance of the reference asset
-                CASE
-                    WHEN quote_coin = '{SOL_ADDRESS}' THEN quote_pool_balance_after
-                    WHEN quote_coin IN ('{usdc}', '{usdt}') THEN quote_pool_balance_after
-                    WHEN base_coin = '{SOL_ADDRESS}' THEN base_pool_balance_after
-                    WHEN base_coin IN ('{usdc}', '{usdt}') THEN base_pool_balance_after
-                    ELSE 0
-                END as ref_balance_raw
+                -- Pool balances for liquidity calculation
+                base_pool_balance_after,
+                quote_pool_balance_after,
+                quote_pool_balance_after AS ref_balance_raw
             FROM solana.swaps
             PREWHERE
                 base_coin IN (SELECT mint FROM {temp_db}.chunk_tokens)
-                AND (
-                    quote_coin = '{SOL_ADDRESS}' OR quote_coin IN ('{usdc}', '{usdt}')
-                    OR base_coin = '{SOL_ADDRESS}' OR base_coin IN ('{usdc}', '{usdt}')
-                )
+                AND (quote_coin = '{SOL_ADDRESS}' OR quote_coin IN ('{usdc}', '{usdt}'))
             WHERE source IN ({allowed_sources_sql})
+              AND base_coin_amount > 0
+              AND quote_coin_amount > 0
 
             UNION ALL
 
@@ -163,54 +174,79 @@ class LiquidityAnalyzer:
                 source,
                 base_coin,
                 quote_coin,
-                base_pool_balance_after,
-                quote_pool_balance_after,
                 block_time,
+                -- Token amount (the token we're pricing)
+                quote_coin_amount AS token_amount,
+                -- Reference amount (SOL or stablecoin)
+                base_coin_amount AS ref_amount,
+                -- Reference type
                 CASE
-                    WHEN quote_coin = '{SOL_ADDRESS}' THEN 'SOL'
-                    WHEN quote_coin IN ('{usdc}', '{usdt}') THEN 'STABLE'
                     WHEN base_coin = '{SOL_ADDRESS}' THEN 'SOL'
                     WHEN base_coin IN ('{usdc}', '{usdt}') THEN 'STABLE'
                     ELSE 'OTHER'
                 END as ref_type,
-                CASE
-                    WHEN quote_coin = '{SOL_ADDRESS}' THEN quote_pool_balance_after
-                    WHEN quote_coin IN ('{usdc}', '{usdt}') THEN quote_pool_balance_after
-                    WHEN base_coin = '{SOL_ADDRESS}' THEN base_pool_balance_after
-                    WHEN base_coin IN ('{usdc}', '{usdt}') THEN base_pool_balance_after
-                    ELSE 0
-                END as ref_balance_raw
+                -- Pool balances
+                base_pool_balance_after,
+                quote_pool_balance_after,
+                base_pool_balance_after AS ref_balance_raw
             FROM solana.swaps
             PREWHERE
                 quote_coin IN (SELECT mint FROM {temp_db}.chunk_tokens)
-                AND (
-                    quote_coin = '{SOL_ADDRESS}' OR quote_coin IN ('{usdc}', '{usdt}')
-                    OR base_coin = '{SOL_ADDRESS}' OR base_coin IN ('{usdc}', '{usdt}')
-                )
+                AND (base_coin = '{SOL_ADDRESS}' OR base_coin IN ('{usdc}', '{usdt}'))
             WHERE source IN ({allowed_sources_sql})
+              AND base_coin_amount > 0
+              AND quote_coin_amount > 0
         ),
-        
-        -- 2. Aggregate per POOL to find the latest state and approximate liquidity
-        pool_stats AS (
+
+        -- 2. Calculate VWAP prices with cascading fallback
+        price_candidates AS (
             SELECT
                 token,
-                -- Canonical source name cleanup
-                CASE
-                    WHEN source LIKE 'jupiter6_%' THEN substring(source, 10)
-                    WHEN source LIKE 'jupiter4_%' THEN substring(source, 10)
-                    WHEN source LIKE 'raydium_route_%' THEN substring(source, 15)
-                    ELSE source
-                END AS canonical_source,
-                base_coin,
-                quote_coin,
-                -- Latest state of this pool
-                argMax(base_pool_balance_after, block_time) as latest_base_bal,
-                argMax(quote_pool_balance_after, block_time) as latest_quote_bal,
-                min(block_time) as first_swap_time,
-                -- Liquidity Score Calculation (Approximate USD value of the Reference Side)
-                -- We use this ONLY for ranking pools, so exact precision isn't critical, but order is.
-                -- SOL = 9 decimals, price from Redis
-                -- Stable = 6 decimals, Price $1
+
+                -- VWAP 5 minutes (most accurate for active tokens)
+                sumIf(ref_amount, block_time >= now() - INTERVAL 5 MINUTE)
+                    / greatest(sumIf(token_amount, block_time >= now() - INTERVAL 5 MINUTE), 1)
+                    AS vwap_5m_raw,
+
+                -- VWAP 1 hour
+                sumIf(ref_amount, block_time >= now() - INTERVAL 1 HOUR)
+                    / greatest(sumIf(token_amount, block_time >= now() - INTERVAL 1 HOUR), 1)
+                    AS vwap_1h_raw,
+
+                -- VWAP 24 hours
+                sumIf(ref_amount, block_time >= now() - INTERVAL 24 HOUR)
+                    / greatest(sumIf(token_amount, block_time >= now() - INTERVAL 24 HOUR), 1)
+                    AS vwap_24h_raw,
+
+                -- Last price from trade > $10 equivalent
+                argMaxIf(
+                    ref_amount / token_amount,
+                    block_time,
+                    ref_amount > 10000000  -- > $10 for stables (6 decimals)
+                ) AS last_price_filtered_raw,
+
+                -- Any last price (fallback)
+                argMax(ref_amount / token_amount, block_time) AS last_price_any_raw,
+
+                -- Trade counts for method selection
+                countIf(block_time >= now() - INTERVAL 5 MINUTE) AS trades_5m,
+                countIf(block_time >= now() - INTERVAL 1 HOUR) AS trades_1h,
+                countIf(block_time >= now() - INTERVAL 24 HOUR) AS trades_24h,
+
+                -- Reference type from latest trade (for USD conversion)
+                argMax(ref_type, block_time) AS latest_ref_type,
+
+                -- First swap time
+                min(block_time) AS first_swap_time,
+
+                -- Best pool info (by latest ref balance)
+                argMax(source, ref_balance_raw) AS best_source,
+                argMax(base_coin, ref_balance_raw) AS best_base_coin,
+                argMax(quote_coin, ref_balance_raw) AS best_quote_coin,
+                argMax(base_pool_balance_after, ref_balance_raw) AS best_base_balance,
+                argMax(quote_pool_balance_after, ref_balance_raw) AS best_quote_balance,
+
+                -- Liquidity from best pool
                 argMax(
                     CASE
                         WHEN ref_type = 'SOL' THEN (ref_balance_raw / 1e9) * {self.sol_price_usd}
@@ -218,45 +254,60 @@ class LiquidityAnalyzer:
                         ELSE 0
                     END,
                     block_time
-                ) as liquidity_score_usd
+                ) AS liquidity_usd
+
             FROM unified_swaps
-            GROUP BY token, canonical_source, base_coin, quote_coin
+            WHERE ref_type != 'OTHER'
+            GROUP BY token
         )
 
-        -- 3. Select the BEST pool for each token (Max Liquidity)
+        -- 3. Final selection with cascading price method
         SELECT
             token,
-            min(first_swap_time) as first_swap,
-            
-            -- Info from the Deepest Pool
-            argMax(canonical_source, liquidity_score_usd) as latest_source,
-            argMax(base_coin, liquidity_score_usd) as latest_base_coin,
-            argMax(quote_coin, liquidity_score_usd) as latest_quote_coin,
-            argMax(latest_base_bal, liquidity_score_usd) as latest_base_balance,
-            argMax(latest_quote_bal, liquidity_score_usd) as latest_quote_balance,
-            
-            -- We NO LONGER return a pre-calculated price. 
-            -- We return the raw reserves of the best pool.
-            -- The PriceCalculator will compute price = quote / base.
-            
-            -- For backward compatibility with the return dict, we pass the reference coin
-            argMax(
-                CASE
-                    WHEN quote_coin = '{SOL_ADDRESS}' THEN '{SOL_ADDRESS}'
-                    WHEN base_coin = '{SOL_ADDRESS}' THEN '{SOL_ADDRESS}'
-                    WHEN quote_coin IN ('{usdc}', '{usdt}') THEN quote_coin
-                    WHEN base_coin IN ('{usdc}', '{usdt}') THEN base_coin
-                    ELSE NULL
-                END,
-                liquidity_score_usd
-            ) as latest_price_reference,
-            
-            -- Pass 0 as raw price, we will calculate it in Python
-            0.0 as latest_price_raw
-            
-        FROM pool_stats
-        GROUP BY token
-        HAVING latest_base_balance > 0 AND latest_quote_balance > 0
+            first_swap_time AS first_swap,
+            best_source AS latest_source,
+            best_base_coin AS latest_base_coin,
+            best_quote_coin AS latest_quote_coin,
+            best_base_balance AS latest_base_balance,
+            best_quote_balance AS latest_quote_balance,
+
+            -- Cascading VWAP price selection (raw, needs USD conversion)
+            multiIf(
+                trades_5m >= 3, vwap_5m_raw,
+                trades_1h >= 5, vwap_1h_raw,
+                trades_24h >= 5, vwap_24h_raw,
+                last_price_filtered_raw > 0, last_price_filtered_raw,
+                last_price_any_raw
+            ) AS price_raw,
+
+            -- Price method used (for debugging/monitoring)
+            multiIf(
+                trades_5m >= 3, 'VWAP_5M',
+                trades_1h >= 5, 'VWAP_1H',
+                trades_24h >= 5, 'VWAP_24H',
+                last_price_filtered_raw > 0, 'LAST_FILTERED',
+                'LAST_ANY'
+            ) AS price_method,
+
+            -- Reference type for USD conversion
+            latest_ref_type AS price_reference_type,
+
+            -- Reference coin address
+            CASE
+                WHEN latest_ref_type = 'SOL' THEN '{SOL_ADDRESS}'
+                ELSE best_quote_coin
+            END AS latest_price_reference,
+
+            -- Liquidity
+            liquidity_usd,
+
+            -- Trade counts for monitoring
+            trades_5m,
+            trades_1h,
+            trades_24h
+
+        FROM price_candidates
+        WHERE price_raw > 0
         """
 
         logger.debug(f'Executing CONSOLIDATED swap aggregation from {temp_db}.chunk_tokens table')
@@ -304,8 +355,14 @@ class LiquidityAnalyzer:
                     'latest_quote_coin': quote_coin_str,
                     'latest_base_balance': row['latest_base_balance'],
                     'latest_quote_balance': row['latest_quote_balance'],
-                    'latest_price_raw': row['latest_price_raw'],
-                    'latest_price_reference': price_reference_str
+                    'price_raw': row['price_raw'],  # VWAP price (raw, needs decimal conversion)
+                    'price_method': row['price_method'],  # Which method was used
+                    'price_reference_type': row['price_reference_type'],  # SOL or STABLE
+                    'latest_price_reference': price_reference_str,
+                    'liquidity_usd': row['liquidity_usd'],
+                    'trades_5m': row['trades_5m'],
+                    'trades_1h': row['trades_1h'],
+                    'trades_24h': row['trades_24h'],
                 }
                 decoded_result.append(decoded_row)
 

@@ -322,11 +322,121 @@ def debug_token(token_address: str, sol_price_usd: float = 235.0):
         print(f"  Price USD: ${price_usd:.6f} | Liquidity USD: ${liquidity_usd:,.2f}")
         print()
 
-    # 3. Price calculation for best pool
+    # 3. VWAP Price calculation (Trade-Based)
+    print()
+    print("3. VWAP PRICE CALCULATION (Trade-Based)")
+    print("-" * 100)
+
+    vwap_query = f"""
+    WITH unified_trades AS (
+        SELECT
+            base_coin AS token,
+            base_coin_amount AS token_amount,
+            quote_coin_amount AS ref_amount,
+            CASE
+                WHEN quote_coin = '{SOL_ADDRESS}' THEN 'SOL'
+                WHEN quote_coin IN ('{USDC_ADDRESS}', '{USDT_ADDRESS}') THEN 'STABLE'
+                ELSE 'OTHER'
+            END as ref_type,
+            block_time
+        FROM solana.swaps
+        WHERE base_coin = '{token_address}'
+          AND (quote_coin = '{SOL_ADDRESS}' OR quote_coin IN ('{USDC_ADDRESS}', '{USDT_ADDRESS}'))
+          {allowed_sources_filter}
+          AND base_coin_amount > 0 AND quote_coin_amount > 0
+
+        UNION ALL
+
+        SELECT
+            quote_coin AS token,
+            quote_coin_amount AS token_amount,
+            base_coin_amount AS ref_amount,
+            CASE
+                WHEN base_coin = '{SOL_ADDRESS}' THEN 'SOL'
+                WHEN base_coin IN ('{USDC_ADDRESS}', '{USDT_ADDRESS}') THEN 'STABLE'
+                ELSE 'OTHER'
+            END as ref_type,
+            block_time
+        FROM solana.swaps
+        WHERE quote_coin = '{token_address}'
+          AND (base_coin = '{SOL_ADDRESS}' OR base_coin IN ('{USDC_ADDRESS}', '{USDT_ADDRESS}'))
+          {allowed_sources_filter}
+          AND base_coin_amount > 0 AND quote_coin_amount > 0
+    )
+    SELECT
+        -- VWAP 5 minutes
+        sumIf(ref_amount, block_time >= now() - INTERVAL 5 MINUTE)
+            / greatest(sumIf(token_amount, block_time >= now() - INTERVAL 5 MINUTE), 1) AS vwap_5m_raw,
+        countIf(block_time >= now() - INTERVAL 5 MINUTE) AS trades_5m,
+
+        -- VWAP 1 hour
+        sumIf(ref_amount, block_time >= now() - INTERVAL 1 HOUR)
+            / greatest(sumIf(token_amount, block_time >= now() - INTERVAL 1 HOUR), 1) AS vwap_1h_raw,
+        countIf(block_time >= now() - INTERVAL 1 HOUR) AS trades_1h,
+
+        -- VWAP 24 hours
+        sumIf(ref_amount, block_time >= now() - INTERVAL 24 HOUR)
+            / greatest(sumIf(token_amount, block_time >= now() - INTERVAL 24 HOUR), 1) AS vwap_24h_raw,
+        countIf(block_time >= now() - INTERVAL 24 HOUR) AS trades_24h,
+
+        -- Last trade price
+        argMax(ref_amount / token_amount, block_time) AS last_price_raw,
+
+        -- Reference type from latest
+        argMax(ref_type, block_time) AS latest_ref_type
+
+    FROM unified_trades
+    WHERE ref_type != 'OTHER'
+    """
+
+    vwap_results = db_client.execute_query_dict(vwap_query)
+    if vwap_results:
+        vwap = vwap_results[0]
+        ref_type = vwap['latest_ref_type']
+        ref_decimals = 9 if ref_type == 'SOL' else 6
+        ref_price_usd = sol_price_usd if ref_type == 'SOL' else 1.0
+
+        print(f"Reference Type: {ref_type}")
+        print(f"Token Decimals: {token_decimals} | Ref Decimals: {ref_decimals}")
+        print()
+
+        # Show all VWAP methods
+        print("VWAP Methods:")
+        print(f"  5 min:  {vwap['trades_5m']:>4} trades | Raw: {vwap['vwap_5m_raw']:.10f}")
+        print(f"  1 hour: {vwap['trades_1h']:>4} trades | Raw: {vwap['vwap_1h_raw']:.10f}")
+        print(f"  24 hour:{vwap['trades_24h']:>4} trades | Raw: {vwap['vwap_24h_raw']:.10f}")
+        print(f"  Last:   {'   1'} trade  | Raw: {vwap['last_price_raw']:.10f}")
+        print()
+
+        # Determine which method to use (cascading)
+        if vwap['trades_5m'] >= 3:
+            price_raw = vwap['vwap_5m_raw']
+            method = "VWAP_5M"
+        elif vwap['trades_1h'] >= 5:
+            price_raw = vwap['vwap_1h_raw']
+            method = "VWAP_1H"
+        elif vwap['trades_24h'] >= 5:
+            price_raw = vwap['vwap_24h_raw']
+            method = "VWAP_24H"
+        else:
+            price_raw = vwap['last_price_raw']
+            method = "LAST_ANY"
+
+        # Convert to USD
+        price_per_ref = price_raw * (10 ** (token_decimals - ref_decimals))
+        price_usd = price_per_ref * ref_price_usd
+
+        print(f"Selected Method: {method}")
+        print(f"Price Raw: {price_raw:.10f}")
+        print(f"Price per {ref_type}: {price_per_ref:.10f}")
+        print(f"PRICE USD: ${price_usd:.6f}")
+        print()
+
+    # Keep old pool-based calc for comparison
     if results:
         best_pool = results[0]
         print()
-        print("3. PRICE CALCULATION (using best pool)")
+        print("4. POOL-BASED PRICE (for comparison - DEPRECATED)")
         print("-" * 100)
 
         base_coin = best_pool['base_coin']
@@ -336,11 +446,6 @@ def debug_token(token_address: str, sol_price_usd: float = 235.0):
 
         print(f"Best Pool Source: {best_pool['source']}")
         print(f"Liquidity Score: ${best_pool['liquidity_score_usd']:,.2f}")
-        print()
-        print(f"Base Coin: {base_coin}")
-        print(f"Quote Coin: {quote_coin}")
-        print(f"Base Balance Raw: {base_bal:,.0f}")
-        print(f"Quote Balance Raw: {quote_bal:,.0f}")
         print()
 
         # Determine which is the token and which is reference
@@ -405,9 +510,9 @@ def debug_token(token_address: str, sol_price_usd: float = 235.0):
             liquidity_usd = ref_normalized * ref_price_usd * 2
             print(f"Largest LP Pool USD: ${liquidity_usd:,.2f}")
 
-    # 4. Check mints/burns for supply
+    # 5. Check mints/burns for supply
     print()
-    print("4. SUPPLY DATA (mints - burns)")
+    print("5. SUPPLY DATA (mints - burns)")
     print("-" * 100)
 
     supply_query = f"""

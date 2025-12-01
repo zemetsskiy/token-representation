@@ -1,5 +1,4 @@
 import logging
-import math
 from typing import List, Dict
 import polars as pl
 from ..database import ClickHouseClient
@@ -8,7 +7,6 @@ logger = logging.getLogger(__name__)
 
 # Constants
 SOL_ADDRESS = 'So11111111111111111111111111111111111111112'
-# SOL price is fetched from Redis at runtime - no hardcoded fallback
 SOL_DECIMALS = 9
 STABLECOINS = {
     'USDC': 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
@@ -16,11 +14,11 @@ STABLECOINS = {
 }
 STABLECOIN_DECIMALS = 6
 
+
 class PriceCalculator:
     """
-    Chunk-optimized price calculator.
-    Makes exactly 1 database query per chunk to get latest prices.
-    Uses WHERE IN clause to filter for specific token chunk.
+    Price calculator using VWAP (Volume-Weighted Average Price) from trade data.
+    Receives pre-calculated VWAP prices from LiquidityAnalyzer and converts to USD.
     """
 
     def __init__(self, db_client: ClickHouseClient):
@@ -29,135 +27,91 @@ class PriceCalculator:
 
     def get_prices_for_chunk(self, price_data: List[Dict] = None, decimals_map: Dict[str, int] | None = None) -> pl.DataFrame:
         """
-        Process price data (provided from consolidated swap query).
-        No longer queries the database - uses pre-fetched data.
+        Process VWAP price data from consolidated swap query.
+        Converts raw VWAP prices to USD based on reference asset (SOL or stablecoin).
 
         Args:
-            price_data: List of price data from consolidated query
+            price_data: List of VWAP price data from LiquidityAnalyzer
+            decimals_map: Token decimals for normalization
 
         Returns:
-            Polars DataFrame with columns: mint, price_in_sol, price_usd
+            Polars DataFrame with columns: mint, price_in_sol, price_usd, price_method
         """
-        logger.info('Processing prices from consolidated swap query')
+        logger.info('Processing VWAP prices from consolidated swap query')
 
-        # Use provided data (or empty list)
         price_data = price_data if price_data else []
-        logger.info(f'Using {len(price_data)} price records from consolidated query')
+        logger.info(f'Using {len(price_data)} VWAP price records')
 
-        # Convert to Polars DataFrame with explicit schema
-        if price_data:
-            df_prices = pl.DataFrame(
-                price_data,
-                schema={
-                    'token': pl.Utf8, 
-                    'price_reference': pl.Utf8, 
-                    'base_coin': pl.Utf8,
-                    'quote_coin': pl.Utf8,
-                    'base_balance': pl.Float64,
-                    'quote_balance': pl.Float64
-                }
-            )
-        else:
-            df_prices = pl.DataFrame(
-                {'token': [], 'price_reference': [], 'base_coin': [], 'quote_coin': [], 'base_balance': [], 'quote_balance': []},
-                schema={
-                    'token': pl.Utf8, 
-                    'price_reference': pl.Utf8, 
-                    'base_coin': pl.Utf8,
-                    'quote_coin': pl.Utf8,
-                    'base_balance': pl.Float64,
-                    'quote_balance': pl.Float64
-                }
-            )
+        if not price_data:
+            return pl.DataFrame({
+                'mint': [],
+                'price_in_sol': [],
+                'price_usd': [],
+                'price_method': []
+            }, schema={
+                'mint': pl.Utf8,
+                'price_in_sol': pl.Float64,
+                'price_usd': pl.Float64,
+                'price_method': pl.Utf8
+            })
 
-        # Rename token column to mint for consistency (always, even if empty)
-        df_prices = df_prices.rename({'token': 'mint'})
+        # Build results directly - VWAP is already calculated
+        results = []
+        stable_addresses = set(STABLECOINS.values())
 
-        # Attach token decimals from RPC results
-        if decimals_map:
-            df_decimals = pl.DataFrame(
-                {'mint': list(decimals_map.keys()), 'decimals': list(decimals_map.values())},
-                schema={'mint': pl.Utf8, 'decimals': pl.Float64}
-            )
-        else:
-            df_decimals = pl.DataFrame({'mint': [], 'decimals': []}, schema={'mint': pl.Utf8, 'decimals': pl.Float64})
+        for row in price_data:
+            token = row['token']
+            price_raw = row.get('price_raw', 0)
+            price_reference_type = row.get('price_reference_type', 'STABLE')
+            price_method = row.get('price_method', 'UNKNOWN')
 
-        if df_decimals.height > 0:
-            df_prices = df_prices.join(df_decimals, on='mint', how='left')
-        else:
-            df_prices = df_prices.with_columns(pl.lit(None).cast(pl.Float64).alias('decimals'))
+            if price_raw <= 0:
+                continue
 
-        df_prices = df_prices.with_columns([
-            pl.col('decimals').alias('token_decimals')
-        ])
+            # Get token decimals
+            token_decimals = decimals_map.get(token, 6) if decimals_map else 6
 
-        # Reference coin decimals (SOL or stablecoin)
-        stable_values = list(STABLECOINS.values())
-        df_prices = df_prices.with_columns([
-            pl.when(pl.col('price_reference') == SOL_ADDRESS)
-            .then(float(SOL_DECIMALS))
-            .when(pl.col('price_reference').is_in(stable_values))
-            .then(float(STABLECOIN_DECIMALS))
-            .otherwise(None)
-            .alias('reference_decimals')
-        ])
+            # Determine reference decimals based on type
+            if price_reference_type == 'SOL':
+                ref_decimals = SOL_DECIMALS
+            else:
+                ref_decimals = STABLECOIN_DECIMALS
 
-        # Calculate Spot Price = ReferenceAmount / TokenAmount
-        # 1. Identify Reference Balance and Token Balance
-        # If quote_coin is reference, then quote_balance is reference amount.
-        # If base_coin is reference, then base_balance is reference amount.
-        
-        df_prices = df_prices.with_columns([
-            pl.when(pl.col('quote_coin') == pl.col('price_reference'))
-            .then(pl.col('quote_balance'))
-            .otherwise(pl.col('base_balance'))
-            .alias('reference_balance_raw'),
-            
-            pl.when(pl.col('quote_coin') == pl.col('price_reference'))
-            .then(pl.col('base_balance'))
-            .otherwise(pl.col('quote_balance'))
-            .alias('token_balance_raw')
-        ])
+            # Convert raw VWAP to normalized price
+            # price_raw = sum(ref_amount) / sum(token_amount) in raw units
+            # Normalized price = price_raw * 10^(token_decimals - ref_decimals)
+            price_per_reference = price_raw * (10 ** (token_decimals - ref_decimals))
 
-        # 2. Normalize and Divide
-        # Price = (RefRaw / 10^RefDec) / (TokenRaw / 10^TokenDec)
-        #       = (RefRaw / TokenRaw) * 10^(TokenDec - RefDec)
-        
-        log10 = math.log(10.0)
-        df_prices = df_prices.with_columns([
-            pl.when(
-                (pl.col('token_balance_raw') > 0)
-                & pl.col('token_decimals').is_not_null()
-                & pl.col('reference_decimals').is_not_null()
-            )
-            .then(
-                (pl.col('reference_balance_raw') / pl.col('token_balance_raw')) *
-                (10.0 ** (pl.col('token_decimals') - pl.col('reference_decimals')))
-            )
-            .otherwise(pl.lit(None, dtype=pl.Float64))
-            .alias('price_per_reference')
-        ])
+            # Convert to USD
+            if price_reference_type == 'SOL':
+                price_in_sol = price_per_reference
+                price_usd = price_in_sol * self.sol_price_usd if self.sol_price_usd else None
+            else:
+                # Stablecoin - price is already in USD
+                price_in_sol = price_per_reference / self.sol_price_usd if self.sol_price_usd else None
+                price_usd = price_per_reference
 
-        # Derive price_in_sol and price_usd depending on reference asset
-        df_prices = df_prices.with_columns([
-            pl.when(pl.col('price_reference') == SOL_ADDRESS)
-            .then(pl.col('price_per_reference'))
-            .otherwise(None)
-            .alias('price_in_sol')
-        ])
+            results.append({
+                'mint': token,
+                'price_in_sol': price_in_sol,
+                'price_usd': price_usd,
+                'price_method': price_method
+            })
 
-        df_prices = df_prices.with_columns([
-            pl.when(pl.col('price_reference') == SOL_ADDRESS)
-            .then(pl.col('price_in_sol') * pl.lit(self.sol_price_usd))
-            .when(pl.col('price_reference').is_in(stable_values))
-            .then(pl.col('price_per_reference'))
-            .otherwise(None)
-            .alias('price_usd')
-        ])
+        df_prices = pl.DataFrame(results, schema={
+            'mint': pl.Utf8,
+            'price_in_sol': pl.Float64,
+            'price_usd': pl.Float64,
+            'price_method': pl.Utf8
+        })
 
-        df_prices = df_prices.select(['mint', 'price_in_sol', 'price_usd'])
+        # Log price method distribution
+        if df_prices.height > 0:
+            method_counts = df_prices.group_by('price_method').count()
+            for row in method_counts.iter_rows():
+                logger.debug(f'  {row[0]}: {row[1]} tokens')
 
-        logger.info(f'Prices fetched and processed for {len(df_prices)} tokens')
+        logger.info(f'VWAP prices processed for {len(df_prices)} tokens')
         return df_prices
 
     def get_sol_price(self) -> float:
