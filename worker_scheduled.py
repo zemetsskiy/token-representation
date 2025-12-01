@@ -8,6 +8,7 @@ import sys
 import os
 import logging
 import argparse
+from datetime import datetime, timedelta
 from pathlib import Path
 
 # Setup paths
@@ -22,24 +23,96 @@ from src.core.main import TokenAggregationWorker
 setup_logging()
 logger = logging.getLogger(__name__)
 
-# View configurations
+# View configurations with cron expressions
 VIEW_CONFIGS = {
     'sol_1000_swaps_3_days': {
         'view': 'derived.sol_1000_swaps_3_days',
         'description': '1000+ swaps in 3 days',
-        'schedule': 'Daily at 00:00 UTC'
+        'schedule': 'Daily at 00:00 UTC',
+        'cron': '0 0 * * *',  # minute, hour
+        'interval_minutes': 1440  # 24 hours
     },
     'sol_500_swaps_7_days': {
         'view': 'derived.sol_500_swaps_7_days',
         'description': '500+ swaps in 7 days',
-        'schedule': 'Every 5 minutes'
+        'schedule': 'Every 5 minutes',
+        'cron': '*/5 * * * *',
+        'interval_minutes': 5
     },
     'sol_100_swaps_30_days': {
         'view': 'derived.sol_100_swaps_30_days',
         'description': '100+ swaps in 30 days',
-        'schedule': 'Daily at 00:00 UTC'
+        'schedule': 'Daily at 00:10 UTC',
+        'cron': '10 0 * * *',
+        'interval_minutes': 1440  # 24 hours
     }
 }
+
+
+def calculate_next_run(view_name: str) -> datetime:
+    """Calculate the next scheduled run time for a view."""
+    config = VIEW_CONFIGS[view_name]
+    now = datetime.utcnow()
+
+    if view_name == 'sol_500_swaps_7_days':
+        # Every 5 minutes - next run at next 5-minute mark
+        minutes_to_next = 5 - (now.minute % 5)
+        if minutes_to_next == 0:
+            minutes_to_next = 5
+        next_run = now.replace(second=0, microsecond=0) + timedelta(minutes=minutes_to_next)
+    elif view_name == 'sol_1000_swaps_3_days':
+        # Daily at 00:00 UTC
+        next_run = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        if now >= next_run:
+            next_run += timedelta(days=1)
+    elif view_name == 'sol_100_swaps_30_days':
+        # Daily at 00:10 UTC
+        next_run = now.replace(hour=0, minute=10, second=0, microsecond=0)
+        if now >= next_run:
+            next_run += timedelta(days=1)
+    else:
+        # Fallback - use interval
+        next_run = now + timedelta(minutes=config['interval_minutes'])
+
+    return next_run
+
+
+def log_schedule_info(view_name: str, is_start: bool = True):
+    """Log scheduling information at start or end of run."""
+    config = VIEW_CONFIGS[view_name]
+    now = datetime.utcnow()
+    next_run = calculate_next_run(view_name)
+    time_until_next = next_run - now
+
+    # Format time until next run
+    total_seconds = int(time_until_next.total_seconds())
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+
+    if hours > 0:
+        time_str = f"{hours}h {minutes}m {seconds}s"
+    elif minutes > 0:
+        time_str = f"{minutes}m {seconds}s"
+    else:
+        time_str = f"{seconds}s"
+
+    logger.info('')
+    logger.info('=' * 100)
+    logger.info(f'⏰ SCHEDULE INFO - {view_name}')
+    logger.info('=' * 100)
+    logger.info(f'  Cron Expression:    {config["cron"]}')
+    logger.info(f'  Schedule:           {config["schedule"]}')
+    logger.info(f'  Current Time (UTC): {now.strftime("%Y-%m-%d %H:%M:%S")}')
+
+    if is_start:
+        logger.info(f'  🚀 RUN STARTED:     {now.strftime("%Y-%m-%d %H:%M:%S")} UTC')
+    else:
+        logger.info(f'  ✅ RUN COMPLETED:   {now.strftime("%Y-%m-%d %H:%M:%S")} UTC')
+
+    logger.info(f'  ⏭️  Next Run:         {next_run.strftime("%Y-%m-%d %H:%M:%S")} UTC')
+    logger.info(f'  ⏳ Time Until Next:  {time_str}')
+    logger.info('=' * 100)
+    logger.info('')
 
 
 class ScheduledTokenWorker(TokenAggregationWorker):
@@ -261,13 +334,21 @@ Examples:
     logger.info('SOLANA TOKEN WORKER - SCHEDULED PROCESSING')
     logger.info('=' * 100)
 
+    # Log schedule info at start
+    log_schedule_info(args.view, is_start=True)
+
     try:
         worker = ScheduledTokenWorker(args.view)
         token_count = worker.process_view_tokens()
         logger.info(f'Successfully processed {token_count:,} tokens from {args.view}')
+
+        # Log schedule info at end
+        log_schedule_info(args.view, is_start=False)
         sys.exit(0)
     except Exception as e:
         logger.error(f'Worker failed: {e}', exc_info=True)
+        # Still log schedule info even on failure
+        log_schedule_info(args.view, is_start=False)
         sys.exit(1)
 
 
