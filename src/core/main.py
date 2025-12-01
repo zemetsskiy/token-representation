@@ -39,10 +39,30 @@ class TokenAggregationWorker:
     def __init__(self):
         logger.info('Initializing Token Aggregation Worker (Chunk-Optimized)')
         self.db_client = get_db_client()
+        
+        # Initialize Redis Client
+        from ..database.redis_client import RedisClient
+        self.redis_client = RedisClient()
+        
+        # Determine SOL Price
+        sol_price = Config.SOL_PRICE_USD
+        redis_price = self.redis_client.get_sol_price()
+        
+        if redis_price:
+            logger.info(f"Using live SOL price from Redis: ${redis_price:.2f}")
+            sol_price = redis_price
+        else:
+            logger.warning(f"Using configured constant SOL price: ${sol_price:.2f}")
+
         self.token_discovery = TokenDiscovery(self.db_client)
         self.supply_calculator = SupplyCalculator(self.db_client)
+        
         self.price_calculator = PriceCalculator(self.db_client)
+        self.price_calculator.set_sol_price(sol_price)
+        
         self.liquidity_analyzer = LiquidityAnalyzer(self.db_client)
+        self.liquidity_analyzer.set_sol_price(sol_price)
+        
         self.first_tx_finder = FirstTxFinder(self.db_client)
         self.decimals_resolver = DecimalsResolver()
         self.metadata_fetcher = MetadataFetcher()

@@ -48,12 +48,26 @@ class PriceCalculator:
         if price_data:
             df_prices = pl.DataFrame(
                 price_data,
-                schema={'token': pl.Utf8, 'price_reference': pl.Utf8, 'raw_price': pl.Float64}
+                schema={
+                    'token': pl.Utf8, 
+                    'price_reference': pl.Utf8, 
+                    'base_coin': pl.Utf8,
+                    'quote_coin': pl.Utf8,
+                    'base_balance': pl.Float64,
+                    'quote_balance': pl.Float64
+                }
             )
         else:
             df_prices = pl.DataFrame(
-                {'token': [], 'price_reference': [], 'raw_price': []},
-                schema={'token': pl.Utf8, 'price_reference': pl.Utf8, 'raw_price': pl.Float64}
+                {'token': [], 'price_reference': [], 'base_coin': [], 'quote_coin': [], 'base_balance': [], 'quote_balance': []},
+                schema={
+                    'token': pl.Utf8, 
+                    'price_reference': pl.Utf8, 
+                    'base_coin': pl.Utf8,
+                    'quote_coin': pl.Utf8,
+                    'base_balance': pl.Float64,
+                    'quote_balance': pl.Float64
+                }
             )
 
         # Rename token column to mint for consistency (always, even if empty)
@@ -88,16 +102,37 @@ class PriceCalculator:
             .alias('reference_decimals')
         ])
 
-        # Adjust raw price using token/reference decimals; missing decimals -> null price
+        # Calculate Spot Price = ReferenceAmount / TokenAmount
+        # 1. Identify Reference Balance and Token Balance
+        # If quote_coin is reference, then quote_balance is reference amount.
+        # If base_coin is reference, then base_balance is reference amount.
+        
+        df_prices = df_prices.with_columns([
+            pl.when(pl.col('quote_coin') == pl.col('price_reference'))
+            .then(pl.col('quote_balance'))
+            .otherwise(pl.col('base_balance'))
+            .alias('reference_balance_raw'),
+            
+            pl.when(pl.col('quote_coin') == pl.col('price_reference'))
+            .then(pl.col('base_balance'))
+            .otherwise(pl.col('quote_balance'))
+            .alias('token_balance_raw')
+        ])
+
+        # 2. Normalize and Divide
+        # Price = (RefRaw / 10^RefDec) / (TokenRaw / 10^TokenDec)
+        #       = (RefRaw / TokenRaw) * 10^(TokenDec - RefDec)
+        
         log10 = math.log(10.0)
         df_prices = df_prices.with_columns([
             pl.when(
-                pl.col('raw_price').is_not_null()
+                pl.col('token_balance_raw') > 0
                 & pl.col('token_decimals').is_not_null()
                 & pl.col('reference_decimals').is_not_null()
             )
             .then(
-                pl.col('raw_price') * ((pl.col('token_decimals') - pl.col('reference_decimals')) * log10).exp()
+                (pl.col('reference_balance_raw') / pl.col('token_balance_raw')) * 
+                ((pl.col('token_decimals') - pl.col('reference_decimals')) * log10).exp()
             )
             .otherwise(None)
             .alias('price_per_reference')
@@ -113,7 +148,7 @@ class PriceCalculator:
 
         df_prices = df_prices.with_columns([
             pl.when(pl.col('price_reference') == SOL_ADDRESS)
-            .then(pl.col('price_in_sol') * SOL_PRICE_USD)
+            .then(pl.col('price_in_sol') * pl.lit(self.sol_price_usd))
             .when(pl.col('price_reference').is_in(stable_values))
             .then(pl.col('price_per_reference'))
             .otherwise(None)

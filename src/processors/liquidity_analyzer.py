@@ -66,12 +66,16 @@ class LiquidityAnalyzer:
                     'last_quote_balance': row['latest_quote_balance']
                 })
 
-            # Price data (if available)
-            if row.get('latest_price_raw') and row.get('latest_price_reference'):
+            # Price data (now based on Deepest Pool Reserves)
+            if row.get('latest_price_reference'):
                 prices.append({
                     'token': token,
                     'price_reference': row['latest_price_reference'],
-                    'raw_price': row['latest_price_raw']
+                    # Pass reserves for calculation
+                    'base_coin': row['latest_base_coin'],
+                    'quote_coin': row['latest_quote_coin'],
+                    'base_balance': row['latest_base_balance'],
+                    'quote_balance': row['latest_quote_balance']
                 })
 
         logger.info(f'Extracted: {len(first_swaps)} first swaps, {len(pool_data)} pools, {len(prices)} prices')
@@ -93,17 +97,32 @@ class LiquidityAnalyzer:
 
         query = f"""
         WITH
-        base_side AS (
+        -- 1. Unify base and quote side swaps into a single stream of "Token + Pool" events
+        unified_swaps AS (
             SELECT
                 base_coin AS token,
-                block_time,
                 source,
                 base_coin,
                 quote_coin,
-                base_coin_amount,
-                quote_coin_amount,
                 base_pool_balance_after,
-                quote_pool_balance_after
+                quote_pool_balance_after,
+                block_time,
+                -- Identify the reference asset (money) in this pair
+                CASE
+                    WHEN quote_coin = '{SOL_ADDRESS}' THEN 'SOL'
+                    WHEN quote_coin IN ('{usdc}', '{usdt}') THEN 'STABLE'
+                    WHEN base_coin = '{SOL_ADDRESS}' THEN 'SOL'
+                    WHEN base_coin IN ('{usdc}', '{usdt}') THEN 'STABLE'
+                    ELSE 'OTHER'
+                END as ref_type,
+                -- Get the raw balance of the reference asset
+                CASE
+                    WHEN quote_coin = '{SOL_ADDRESS}' THEN quote_pool_balance_after
+                    WHEN quote_coin IN ('{usdc}', '{usdt}') THEN quote_pool_balance_after
+                    WHEN base_coin = '{SOL_ADDRESS}' THEN base_pool_balance_after
+                    WHEN base_coin IN ('{usdc}', '{usdt}') THEN base_pool_balance_after
+                    ELSE 0
+                END as ref_balance_raw
             FROM solana.swaps
             PREWHERE
                 base_coin IN (SELECT mint FROM {temp_db}.chunk_tokens)
@@ -111,18 +130,31 @@ class LiquidityAnalyzer:
                     quote_coin = '{SOL_ADDRESS}' OR quote_coin IN ('{usdc}', '{usdt}')
                     OR base_coin = '{SOL_ADDRESS}' OR base_coin IN ('{usdc}', '{usdt}')
                 )
-        ),
-        quote_side AS (
+            
+            UNION ALL
+            
             SELECT
                 quote_coin AS token,
-                block_time,
                 source,
                 base_coin,
                 quote_coin,
-                base_coin_amount,
-                quote_coin_amount,
                 base_pool_balance_after,
-                quote_pool_balance_after
+                quote_pool_balance_after,
+                block_time,
+                CASE
+                    WHEN quote_coin = '{SOL_ADDRESS}' THEN 'SOL'
+                    WHEN quote_coin IN ('{usdc}', '{usdt}') THEN 'STABLE'
+                    WHEN base_coin = '{SOL_ADDRESS}' THEN 'SOL'
+                    WHEN base_coin IN ('{usdc}', '{usdt}') THEN 'STABLE'
+                    ELSE 'OTHER'
+                END as ref_type,
+                CASE
+                    WHEN quote_coin = '{SOL_ADDRESS}' THEN quote_pool_balance_after
+                    WHEN quote_coin IN ('{usdc}', '{usdt}') THEN quote_pool_balance_after
+                    WHEN base_coin = '{SOL_ADDRESS}' THEN base_pool_balance_after
+                    WHEN base_coin IN ('{usdc}', '{usdt}') THEN base_pool_balance_after
+                    ELSE 0
+                END as ref_balance_raw
             FROM solana.swaps
             PREWHERE
                 quote_coin IN (SELECT mint FROM {temp_db}.chunk_tokens)
@@ -130,33 +162,58 @@ class LiquidityAnalyzer:
                     quote_coin = '{SOL_ADDRESS}' OR quote_coin IN ('{usdc}', '{usdt}')
                     OR base_coin = '{SOL_ADDRESS}' OR base_coin IN ('{usdc}', '{usdt}')
                 )
-        )
-        SELECT
-            token,
-            MIN(block_time) AS first_swap,
-            argMax(
+        ),
+        
+        -- 2. Aggregate per POOL to find the latest state and approximate liquidity
+        pool_stats AS (
+            SELECT
+                token,
+                -- Canonical source name cleanup
                 CASE
                     WHEN source LIKE 'jupiter6_%' THEN substring(source, 10)
                     WHEN source LIKE 'jupiter4_%' THEN substring(source, 10)
                     WHEN source LIKE 'raydium_route_%' THEN substring(source, 15)
                     ELSE source
-                END,
-                block_time
-            ) AS latest_source,
-            argMax(base_coin, block_time) AS latest_base_coin,
-            argMax(quote_coin, block_time) AS latest_quote_coin,
-            argMax(base_pool_balance_after, block_time) AS latest_base_balance,
-            argMax(quote_pool_balance_after, block_time) AS latest_quote_balance,
-            argMax(
-                CASE
-                    WHEN quote_coin = '{SOL_ADDRESS}' THEN quote_coin_amount / NULLIF(base_coin_amount, 0)
-                    WHEN base_coin = '{SOL_ADDRESS}' THEN base_coin_amount / NULLIF(quote_coin_amount, 0)
-                    WHEN quote_coin IN ('{usdc}', '{usdt}') THEN quote_coin_amount / NULLIF(base_coin_amount, 0)
-                    WHEN base_coin IN ('{usdc}', '{usdt}') THEN base_coin_amount / NULLIF(quote_coin_amount, 0)
-                    ELSE NULL
-                END,
-                block_time
-            ) AS latest_price_raw,
+                END AS canonical_source,
+                base_coin,
+                quote_coin,
+                -- Latest state of this pool
+                argMax(base_pool_balance_after, block_time) as latest_base_bal,
+                argMax(quote_pool_balance_after, block_time) as latest_quote_bal,
+                min(block_time) as first_swap_time,
+                -- Liquidity Score Calculation (Approximate USD value of the Reference Side)
+                -- We use this ONLY for ranking pools, so exact precision isn't critical, but order is.
+                -- SOL = 9 decimals, Price ~$190
+                -- Stable = 6 decimals, Price $1
+                argMax(
+                    CASE
+                        WHEN ref_type = 'SOL' THEN (ref_balance_raw / 1e9) * {SOL_PRICE_USD}
+                        WHEN ref_type = 'STABLE' THEN (ref_balance_raw / 1e6)
+                        ELSE 0
+                    END,
+                    block_time
+                ) as liquidity_score_usd
+            FROM unified_swaps
+            GROUP BY token, canonical_source, base_coin, quote_coin
+        )
+
+        -- 3. Select the BEST pool for each token (Max Liquidity)
+        SELECT
+            token,
+            min(first_swap_time) as first_swap,
+            
+            -- Info from the Deepest Pool
+            argMax(canonical_source, liquidity_score_usd) as latest_source,
+            argMax(base_coin, liquidity_score_usd) as latest_base_coin,
+            argMax(quote_coin, liquidity_score_usd) as latest_quote_coin,
+            argMax(latest_base_bal, liquidity_score_usd) as latest_base_balance,
+            argMax(latest_quote_bal, liquidity_score_usd) as latest_quote_balance,
+            
+            -- We NO LONGER return a pre-calculated price. 
+            -- We return the raw reserves of the best pool.
+            -- The PriceCalculator will compute price = quote / base.
+            
+            -- For backward compatibility with the return dict, we pass the reference coin
             argMax(
                 CASE
                     WHEN quote_coin = '{SOL_ADDRESS}' THEN '{SOL_ADDRESS}'
@@ -165,14 +222,13 @@ class LiquidityAnalyzer:
                     WHEN base_coin IN ('{usdc}', '{usdt}') THEN base_coin
                     ELSE NULL
                 END,
-                block_time
-            ) AS latest_price_reference
-        FROM (
-            SELECT * FROM base_side
-            UNION ALL
-            SELECT * FROM quote_side
-        )
-        WHERE token IN (SELECT mint FROM {temp_db}.chunk_tokens)
+                liquidity_score_usd
+            ) as latest_price_reference,
+            
+            -- Pass 0 as raw price, we will calculate it in Python
+            0.0 as latest_price_raw
+            
+        FROM pool_stats
         GROUP BY token
         HAVING latest_base_balance > 0 AND latest_quote_balance > 0
         """

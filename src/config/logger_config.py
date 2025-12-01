@@ -1,6 +1,6 @@
 import logging
 import sys
-from config import Config
+from .config import Config
 
 def setup_logging():
     log_level = getattr(logging, Config.LOG_LEVEL.upper(), logging.DEBUG)

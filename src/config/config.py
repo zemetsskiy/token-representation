@@ -29,6 +29,13 @@ class Config:
     SOLANA_HTTP_RPC_URL = os.getenv('SOLANA_HTTP_RPC_URL')
     METAPLEX_PROGRAM_ID = os.getenv('METAPLEX_PROGRAM_ID', 'metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s')
 
+    # Redis Configuration (Price Feeder)
+    REDIS_HOST = os.getenv('REDIS_HOST', 'localhost')
+    REDIS_PORT = int(os.getenv('REDIS_PORT', '6379'))
+    REDIS_DB = int(os.getenv('REDIS_DB', '2'))  # Default to DB 2 as per user request
+    REDIS_PASSWORD = os.getenv('REDIS_PASSWORD', None)
+    SOL_PRICE_KEY = os.getenv('SOL_PRICE_KEY', 'solana:price_usd')
+
     # Constants
     STABLECOINS = {'USDC': 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', 'USDT': 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB'}
     SOL_ADDRESS = 'So11111111111111111111111111111111111111112'
