@@ -182,6 +182,7 @@ def debug_token(token_address: str, sol_price_usd: float = 235.0):
             base_coin AS token,
             base_coin_amount AS token_amount,
             quote_coin_amount AS ref_amount,
+            quote_pool_balance_after AS ref_balance_raw,
             CASE
                 WHEN quote_coin = '{SOL_ADDRESS}' THEN 'SOL'
                 WHEN quote_coin IN ('{USDC_ADDRESS}', '{USDT_ADDRESS}') THEN 'STABLE'
@@ -200,6 +201,7 @@ def debug_token(token_address: str, sol_price_usd: float = 235.0):
             quote_coin AS token,
             quote_coin_amount AS token_amount,
             base_coin_amount AS ref_amount,
+            base_pool_balance_after AS ref_balance_raw,
             CASE
                 WHEN base_coin = '{SOL_ADDRESS}' THEN 'SOL'
                 WHEN base_coin IN ('{USDC_ADDRESS}', '{USDT_ADDRESS}') THEN 'STABLE'
@@ -224,6 +226,8 @@ def debug_token(token_address: str, sol_price_usd: float = 235.0):
             / greatest(sumIf(token_amount, block_time >= now() - INTERVAL 24 HOUR AND ref_type = 'STABLE'), 1) AS stable_vwap_24h,
         countIf(block_time >= now() - INTERVAL 24 HOUR AND ref_type = 'STABLE') AS stable_trades_24h,
         argMaxIf(ref_amount / token_amount, block_time, ref_type = 'STABLE') AS stable_last,
+        -- Max liquidity for STABLE pools
+        maxIf(ref_balance_raw / 1e6, ref_type = 'STABLE') AS stable_max_liq_usd,
 
         -- SOL VWAP (9 decimals)
         sumIf(ref_amount, block_time >= now() - INTERVAL 5 MINUTE AND ref_type = 'SOL')
@@ -235,7 +239,9 @@ def debug_token(token_address: str, sol_price_usd: float = 235.0):
         sumIf(ref_amount, block_time >= now() - INTERVAL 24 HOUR AND ref_type = 'SOL')
             / greatest(sumIf(token_amount, block_time >= now() - INTERVAL 24 HOUR AND ref_type = 'SOL'), 1) AS sol_vwap_24h,
         countIf(block_time >= now() - INTERVAL 24 HOUR AND ref_type = 'SOL') AS sol_trades_24h,
-        argMaxIf(ref_amount / token_amount, block_time, ref_type = 'SOL') AS sol_last
+        argMaxIf(ref_amount / token_amount, block_time, ref_type = 'SOL') AS sol_last,
+        -- Max liquidity for SOL pools (converted to USD)
+        maxIf((ref_balance_raw / 1e9) * {sol_price_usd}, ref_type = 'SOL') AS sol_max_liq_usd
 
     FROM unified_trades
     WHERE ref_type != 'OTHER'
@@ -244,6 +250,16 @@ def debug_token(token_address: str, sol_price_usd: float = 235.0):
     vwap_results = db_client.execute_query_dict(vwap_query)
     if vwap_results:
         vwap = vwap_results[0]
+
+        # Determine best pool by max liquidity
+        stable_liq = vwap['stable_max_liq_usd'] or 0
+        sol_liq = vwap['sol_max_liq_usd'] or 0
+        best_pool_ref_type = 'STABLE' if stable_liq >= sol_liq else 'SOL'
+
+        print(f"Best Pool by Liquidity: {best_pool_ref_type}")
+        print(f"  STABLE max liquidity: ${stable_liq:,.2f}")
+        print(f"  SOL max liquidity:    ${sol_liq:,.2f}")
+        print()
 
         print("STABLE Pairs (USDC/USDT - direct USD):")
         print(f"  5 min:  {vwap['stable_trades_5m']:>4} trades | Raw: {vwap['stable_vwap_5m']:.10f}")
@@ -259,29 +275,38 @@ def debug_token(token_address: str, sol_price_usd: float = 235.0):
         print(f"  Last:                  | Raw: {vwap['sol_last']:.10f}" if vwap['sol_last'] else "  Last:                  | Raw: 0")
         print()
 
-        # Cascading selection: prefer STABLE, fallback to SOL
+        # Selection based on best pool's ref_type
         price_raw = 0
         ref_type = None
         method = None
 
-        # Try STABLE first
-        if vwap['stable_trades_5m'] >= 3:
-            price_raw, ref_type, method = vwap['stable_vwap_5m'], 'STABLE', 'STABLE_VWAP_5M'
-        elif vwap['stable_trades_1h'] >= 5:
-            price_raw, ref_type, method = vwap['stable_vwap_1h'], 'STABLE', 'STABLE_VWAP_1H'
-        elif vwap['stable_trades_24h'] >= 5:
-            price_raw, ref_type, method = vwap['stable_vwap_24h'], 'STABLE', 'STABLE_VWAP_24H'
-        elif vwap['stable_last'] and vwap['stable_last'] > 0:
-            price_raw, ref_type, method = vwap['stable_last'], 'STABLE', 'STABLE_LAST'
-        # Fallback to SOL
-        elif vwap['sol_trades_5m'] >= 3:
-            price_raw, ref_type, method = vwap['sol_vwap_5m'], 'SOL', 'SOL_VWAP_5M'
-        elif vwap['sol_trades_1h'] >= 5:
-            price_raw, ref_type, method = vwap['sol_vwap_1h'], 'SOL', 'SOL_VWAP_1H'
-        elif vwap['sol_trades_24h'] >= 5:
-            price_raw, ref_type, method = vwap['sol_vwap_24h'], 'SOL', 'SOL_VWAP_24H'
-        elif vwap['sol_last'] and vwap['sol_last'] > 0:
-            price_raw, ref_type, method = vwap['sol_last'], 'SOL', 'SOL_LAST'
+        if best_pool_ref_type == 'STABLE':
+            # Use STABLE VWAP
+            if vwap['stable_trades_5m'] >= 3:
+                price_raw, ref_type, method = vwap['stable_vwap_5m'], 'STABLE', 'STABLE_VWAP_5M'
+            elif vwap['stable_trades_1h'] >= 5:
+                price_raw, ref_type, method = vwap['stable_vwap_1h'], 'STABLE', 'STABLE_VWAP_1H'
+            elif vwap['stable_trades_24h'] >= 5:
+                price_raw, ref_type, method = vwap['stable_vwap_24h'], 'STABLE', 'STABLE_VWAP_24H'
+            elif vwap['stable_last'] and vwap['stable_last'] > 0:
+                price_raw, ref_type, method = vwap['stable_last'], 'STABLE', 'STABLE_LAST'
+        else:
+            # Use SOL VWAP
+            if vwap['sol_trades_5m'] >= 3:
+                price_raw, ref_type, method = vwap['sol_vwap_5m'], 'SOL', 'SOL_VWAP_5M'
+            elif vwap['sol_trades_1h'] >= 5:
+                price_raw, ref_type, method = vwap['sol_vwap_1h'], 'SOL', 'SOL_VWAP_1H'
+            elif vwap['sol_trades_24h'] >= 5:
+                price_raw, ref_type, method = vwap['sol_vwap_24h'], 'SOL', 'SOL_VWAP_24H'
+            elif vwap['sol_last'] and vwap['sol_last'] > 0:
+                price_raw, ref_type, method = vwap['sol_last'], 'SOL', 'SOL_LAST'
+
+        # Fallback if best pool has no trades
+        if not price_raw:
+            if vwap['stable_last'] and vwap['stable_last'] > 0:
+                price_raw, ref_type, method = vwap['stable_last'], 'STABLE', 'STABLE_LAST (fallback)'
+            elif vwap['sol_last'] and vwap['sol_last'] > 0:
+                price_raw, ref_type, method = vwap['sol_last'], 'SOL', 'SOL_LAST (fallback)'
 
         if price_raw and ref_type:
             ref_decimals = 9 if ref_type == 'SOL' else 6

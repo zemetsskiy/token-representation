@@ -199,6 +199,7 @@ class LiquidityAnalyzer:
         ),
 
         -- 2. Calculate VWAP prices SEPARATELY for SOL and STABLE pairs (can't mix different decimals!)
+        --    Also determine best pool by liquidity USD to know which ref_type to use
         price_candidates AS (
             SELECT
                 token,
@@ -217,6 +218,8 @@ class LiquidityAnalyzer:
                 countIf(block_time >= now() - INTERVAL 5 MINUTE AND ref_type = 'STABLE') AS stable_trades_5m,
                 countIf(block_time >= now() - INTERVAL 1 HOUR AND ref_type = 'STABLE') AS stable_trades_1h,
                 countIf(block_time >= now() - INTERVAL 24 HOUR AND ref_type = 'STABLE') AS stable_trades_24h,
+                -- Max liquidity for STABLE pools
+                maxIf(ref_balance_raw / 1e6, ref_type = 'STABLE') AS stable_max_liquidity_usd,
 
                 -- ========== SOL PAIR VWAP (9 decimals) ==========
                 sumIf(ref_amount, block_time >= now() - INTERVAL 5 MINUTE AND ref_type = 'SOL')
@@ -232,11 +235,13 @@ class LiquidityAnalyzer:
                 countIf(block_time >= now() - INTERVAL 5 MINUTE AND ref_type = 'SOL') AS sol_trades_5m,
                 countIf(block_time >= now() - INTERVAL 1 HOUR AND ref_type = 'SOL') AS sol_trades_1h,
                 countIf(block_time >= now() - INTERVAL 24 HOUR AND ref_type = 'SOL') AS sol_trades_24h,
+                -- Max liquidity for SOL pools (converted to USD)
+                maxIf((ref_balance_raw / 1e9) * {self.sol_price_usd}, ref_type = 'SOL') AS sol_max_liquidity_usd,
 
                 -- First swap time
                 min(block_time) AS first_swap_time,
 
-                -- Best pool info (by latest ref balance in USD terms)
+                -- Best pool info (by max ref balance in USD terms)
                 argMax(source, CASE
                     WHEN ref_type = 'SOL' THEN ref_balance_raw / 1e9 * {self.sol_price_usd}
                     WHEN ref_type = 'STABLE' THEN ref_balance_raw / 1e6
@@ -262,6 +267,12 @@ class LiquidityAnalyzer:
                     WHEN ref_type = 'STABLE' THEN ref_balance_raw / 1e6
                     ELSE 0
                 END) AS best_quote_balance,
+                -- Best pool's ref_type (determined by max liquidity)
+                argMax(ref_type, CASE
+                    WHEN ref_type = 'SOL' THEN ref_balance_raw / 1e9 * {self.sol_price_usd}
+                    WHEN ref_type = 'STABLE' THEN ref_balance_raw / 1e6
+                    ELSE 0
+                END) AS best_pool_ref_type,
 
                 -- Liquidity from best pool
                 max(
@@ -277,7 +288,7 @@ class LiquidityAnalyzer:
             GROUP BY token
         )
 
-        -- 3. Final selection - prefer STABLE pairs (direct USD), fallback to SOL
+        -- 3. Final selection - use VWAP from best pool's ref_type (by liquidity)
         SELECT
             token,
             first_swap_time AS first_swap,
@@ -287,55 +298,64 @@ class LiquidityAnalyzer:
             best_base_balance AS latest_base_balance,
             best_quote_balance AS latest_quote_balance,
 
-            -- Cascading VWAP: First try STABLE, then SOL (each with cascading time windows)
+            -- Cascading VWAP based on best pool's ref_type
             multiIf(
-                -- STABLE cascading
-                stable_trades_5m >= 3, stable_vwap_5m_raw,
-                stable_trades_1h >= 5, stable_vwap_1h_raw,
-                stable_trades_24h >= 5, stable_vwap_24h_raw,
+                -- If best pool is STABLE, use STABLE VWAP
+                best_pool_ref_type = 'STABLE' AND stable_trades_5m >= 3, stable_vwap_5m_raw,
+                best_pool_ref_type = 'STABLE' AND stable_trades_1h >= 5, stable_vwap_1h_raw,
+                best_pool_ref_type = 'STABLE' AND stable_trades_24h >= 5, stable_vwap_24h_raw,
+                best_pool_ref_type = 'STABLE' AND stable_last_price_raw > 0, stable_last_price_raw,
+                -- If best pool is SOL, use SOL VWAP
+                best_pool_ref_type = 'SOL' AND sol_trades_5m >= 3, sol_vwap_5m_raw,
+                best_pool_ref_type = 'SOL' AND sol_trades_1h >= 5, sol_vwap_1h_raw,
+                best_pool_ref_type = 'SOL' AND sol_trades_24h >= 5, sol_vwap_24h_raw,
+                best_pool_ref_type = 'SOL' AND sol_last_price_raw > 0, sol_last_price_raw,
+                -- Fallback: any available price
                 stable_last_price_raw > 0, stable_last_price_raw,
-                -- SOL cascading (fallback)
-                sol_trades_5m >= 3, sol_vwap_5m_raw,
-                sol_trades_1h >= 5, sol_vwap_1h_raw,
-                sol_trades_24h >= 5, sol_vwap_24h_raw,
                 sol_last_price_raw > 0, sol_last_price_raw,
                 0
             ) AS price_raw,
 
-            -- Price method and reference type
+            -- Price method
             multiIf(
-                stable_trades_5m >= 3, 'STABLE_VWAP_5M',
-                stable_trades_1h >= 5, 'STABLE_VWAP_1H',
-                stable_trades_24h >= 5, 'STABLE_VWAP_24H',
+                best_pool_ref_type = 'STABLE' AND stable_trades_5m >= 3, 'STABLE_VWAP_5M',
+                best_pool_ref_type = 'STABLE' AND stable_trades_1h >= 5, 'STABLE_VWAP_1H',
+                best_pool_ref_type = 'STABLE' AND stable_trades_24h >= 5, 'STABLE_VWAP_24H',
+                best_pool_ref_type = 'STABLE' AND stable_last_price_raw > 0, 'STABLE_LAST',
+                best_pool_ref_type = 'SOL' AND sol_trades_5m >= 3, 'SOL_VWAP_5M',
+                best_pool_ref_type = 'SOL' AND sol_trades_1h >= 5, 'SOL_VWAP_1H',
+                best_pool_ref_type = 'SOL' AND sol_trades_24h >= 5, 'SOL_VWAP_24H',
+                best_pool_ref_type = 'SOL' AND sol_last_price_raw > 0, 'SOL_LAST',
                 stable_last_price_raw > 0, 'STABLE_LAST',
-                sol_trades_5m >= 3, 'SOL_VWAP_5M',
-                sol_trades_1h >= 5, 'SOL_VWAP_1H',
-                sol_trades_24h >= 5, 'SOL_VWAP_24H',
                 sol_last_price_raw > 0, 'SOL_LAST',
                 'NONE'
             ) AS price_method,
 
-            -- Reference type for USD conversion
+            -- Reference type for USD conversion (from best pool)
             multiIf(
-                stable_trades_5m >= 3 OR stable_trades_1h >= 5 OR stable_trades_24h >= 5 OR stable_last_price_raw > 0, 'STABLE',
-                sol_trades_5m >= 3 OR sol_trades_1h >= 5 OR sol_trades_24h >= 5 OR sol_last_price_raw > 0, 'SOL',
+                best_pool_ref_type = 'STABLE' AND (stable_trades_5m >= 3 OR stable_trades_1h >= 5 OR stable_trades_24h >= 5 OR stable_last_price_raw > 0), 'STABLE',
+                best_pool_ref_type = 'SOL' AND (sol_trades_5m >= 3 OR sol_trades_1h >= 5 OR sol_trades_24h >= 5 OR sol_last_price_raw > 0), 'SOL',
+                stable_last_price_raw > 0, 'STABLE',
+                sol_last_price_raw > 0, 'SOL',
                 'NONE'
             ) AS price_reference_type,
 
             -- Reference coin address
             multiIf(
-                stable_trades_5m >= 3 OR stable_trades_1h >= 5 OR stable_trades_24h >= 5 OR stable_last_price_raw > 0, '{usdc}',
-                sol_trades_5m >= 3 OR sol_trades_1h >= 5 OR sol_trades_24h >= 5 OR sol_last_price_raw > 0, '{SOL_ADDRESS}',
+                best_pool_ref_type = 'STABLE' AND (stable_trades_5m >= 3 OR stable_trades_1h >= 5 OR stable_trades_24h >= 5 OR stable_last_price_raw > 0), '{usdc}',
+                best_pool_ref_type = 'SOL' AND (sol_trades_5m >= 3 OR sol_trades_1h >= 5 OR sol_trades_24h >= 5 OR sol_last_price_raw > 0), '{SOL_ADDRESS}',
+                stable_last_price_raw > 0, '{usdc}',
+                sol_last_price_raw > 0, '{SOL_ADDRESS}',
                 ''
             ) AS latest_price_reference,
 
             -- Liquidity
             liquidity_usd,
 
-            -- Trade counts for monitoring (combined for logging)
-            stable_trades_5m + sol_trades_5m AS trades_5m,
-            stable_trades_1h + sol_trades_1h AS trades_1h,
-            stable_trades_24h + sol_trades_24h AS trades_24h
+            -- Trade counts for the selected ref_type
+            if(best_pool_ref_type = 'STABLE', stable_trades_5m, sol_trades_5m) AS trades_5m,
+            if(best_pool_ref_type = 'STABLE', stable_trades_1h, sol_trades_1h) AS trades_1h,
+            if(best_pool_ref_type = 'STABLE', stable_trades_24h, sol_trades_24h) AS trades_24h
 
         FROM price_candidates
         WHERE price_raw > 0
