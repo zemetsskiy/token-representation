@@ -48,6 +48,7 @@ class MetadataFetcher:
 
         result = {}
         metadata_found = 0
+        metadata_not_found = 0
         for addr in token_addresses:
             s = addr.decode('utf-8', errors='ignore') if isinstance(addr, (bytes, bytearray)) else str(addr)
             s = s.replace('\x00', '').strip()
@@ -55,8 +56,13 @@ class MetadataFetcher:
             result[s] = metadata
             if metadata and metadata[0] is not None:  # Has symbol
                 metadata_found += 1
+            else:
+                metadata_not_found += 1
 
-        logger.info(f'Finished resolving metadata. Found metadata for {metadata_found}/{len(token_addresses)} tokens')
+        pct_found = 100 * metadata_found / len(token_addresses) if token_addresses else 0
+        logger.info(f'Finished resolving metadata. Found metadata for {metadata_found}/{len(token_addresses)} tokens ({pct_found:.1f}%)')
+        if metadata_not_found > 0:
+            logger.info(f'  Metadata NOT found: {metadata_not_found} tokens (no Metaplex metadata on-chain - this is normal for pump.fun tokens)')
         return result
 
     def _fetch_metadata_batch(self, mint_addresses: List[str]):
