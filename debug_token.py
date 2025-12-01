@@ -69,48 +69,82 @@ def debug_token(token_address: str, sol_price_usd: float = 235.0):
     print("1. ALL POOLS FOR THIS TOKEN (last 7 days)")
     print("-" * 100)
 
+    # Fetch token decimals first
+    print("Fetching token decimals from RPC...")
+    token_decimals = fetch_token_decimals(token_address)
+    print(f"Token decimals: {token_decimals}")
+    print()
+
     pools_query = f"""
     SELECT
         source,
+        direction,
         base_coin,
         quote_coin,
+        base_coin_amount,
+        quote_coin_amount,
         base_pool_balance_after,
         quote_pool_balance_after,
         block_time,
-        -- Identify reference asset
-        CASE
-            WHEN quote_coin = '{SOL_ADDRESS}' THEN 'SOL'
-            WHEN base_coin = '{SOL_ADDRESS}' THEN 'SOL'
-            WHEN quote_coin IN ('{USDC_ADDRESS}', '{USDT_ADDRESS}') THEN 'STABLE'
-            WHEN base_coin IN ('{USDC_ADDRESS}', '{USDT_ADDRESS}') THEN 'STABLE'
-            ELSE 'OTHER'
-        END as ref_type,
-        -- Reference balance
-        CASE
-            WHEN quote_coin = '{SOL_ADDRESS}' THEN quote_pool_balance_after
-            WHEN base_coin = '{SOL_ADDRESS}' THEN base_pool_balance_after
-            WHEN quote_coin IN ('{USDC_ADDRESS}', '{USDT_ADDRESS}') THEN quote_pool_balance_after
-            WHEN base_coin IN ('{USDC_ADDRESS}', '{USDT_ADDRESS}') THEN base_pool_balance_after
-            ELSE 0
-        END as ref_balance_raw
+        signature
     FROM solana.swaps
     WHERE (base_coin = '{token_address}' OR quote_coin = '{token_address}')
-      AND block_time >= now() - INTERVAL 7 DAY
+      AND (
+          quote_coin = '{SOL_ADDRESS}' OR quote_coin IN ('{USDC_ADDRESS}', '{USDT_ADDRESS}')
+          OR base_coin = '{SOL_ADDRESS}' OR base_coin IN ('{USDC_ADDRESS}', '{USDT_ADDRESS}')
+      )
     ORDER BY block_time DESC
     LIMIT 20
     """
 
     results = db_client.execute_query_dict(pools_query)
-    print(f"Found {len(results)} recent swaps")
+    print(f"Found {len(results)} recent swaps with SOL/USDC/USDT")
     print()
 
-    for i, row in enumerate(results[:5]):
-        print(f"Swap {i+1}:")
-        print(f"  Source: {row['source']}")
-        print(f"  Base: {row['base_coin'][:20]}... | Quote: {row['quote_coin'][:20]}...")
-        print(f"  Base Balance: {row['base_pool_balance_after']:,.0f}")
-        print(f"  Quote Balance: {row['quote_pool_balance_after']:,.0f}")
-        print(f"  Ref Type: {row['ref_type']} | Ref Balance Raw: {row['ref_balance_raw']:,.0f}")
+    for i, row in enumerate(results[:10]):
+        # Clean addresses
+        base_coin_raw = row['base_coin']
+        quote_coin_raw = row['quote_coin']
+        base_coin_str = base_coin_raw.decode('utf-8').rstrip('\x00') if isinstance(base_coin_raw, bytes) else str(base_coin_raw).rstrip('\x00')
+        quote_coin_str = quote_coin_raw.decode('utf-8').rstrip('\x00') if isinstance(quote_coin_raw, bytes) else str(quote_coin_raw).rstrip('\x00')
+
+        base_amount = row['base_coin_amount']
+        quote_amount = row['quote_coin_amount']
+
+        # Determine which is token and which is reference
+        if base_coin_str == token_address:
+            token_amount = base_amount
+            ref_amount = quote_amount
+            ref_coin = quote_coin_str
+        else:
+            token_amount = quote_amount
+            ref_amount = base_amount
+            ref_coin = base_coin_str
+
+        # Get reference decimals
+        if ref_coin == SOL_ADDRESS:
+            ref_decimals = 9
+            ref_name = "SOL"
+            ref_price_usd = sol_price_usd
+        else:
+            ref_decimals = 6
+            ref_name = "USDC/USDT"
+            ref_price_usd = 1.0
+
+        # Normalize amounts
+        token_normalized = token_amount / (10 ** token_decimals)
+        ref_normalized = ref_amount / (10 ** ref_decimals)
+
+        # Calculate trade price
+        if token_normalized > 0:
+            trade_price = (ref_normalized / token_normalized) * ref_price_usd
+        else:
+            trade_price = 0
+
+        print(f"Trade {i+1}: {row['source']} ({row['direction']})")
+        print(f"  Token Amount: {token_normalized:,.6f} | {ref_name} Amount: {ref_normalized:,.6f}")
+        print(f"  TRADE PRICE: ${trade_price:.6f}")
+        print(f"  Pool After - Base: {row['base_pool_balance_after']:,.0f} | Quote: {row['quote_pool_balance_after']:,.0f}")
         print(f"  Time: {row['block_time']}")
         print()
 
