@@ -96,9 +96,20 @@ class LiquidityAnalyzer:
         usdc = STABLECOINS['USDC']
         usdt = STABLECOINS['USDT']
 
+        # Exclude routing/multi-hop sources that don't represent real pool balances
+        # These sources aggregate across multiple pools and don't have accurate per-pool balances
+        excluded_sources = [
+            'orca_swap_twohop',
+            'jupiter_route',
+            'raydium_route',
+            'meteora_route',
+        ]
+        excluded_sources_sql = ', '.join([f"'{s}'" for s in excluded_sources])
+
         query = f"""
         WITH
         -- 1. Unify base and quote side swaps into a single stream of "Token + Pool" events
+        -- IMPORTANT: Exclude multi-hop/routing sources as they don't have real pool balances
         unified_swaps AS (
             SELECT
                 base_coin AS token,
@@ -131,9 +142,13 @@ class LiquidityAnalyzer:
                     quote_coin = '{SOL_ADDRESS}' OR quote_coin IN ('{usdc}', '{usdt}')
                     OR base_coin = '{SOL_ADDRESS}' OR base_coin IN ('{usdc}', '{usdt}')
                 )
-            
+            WHERE source NOT IN ({excluded_sources_sql})
+              AND source NOT LIKE '%_route%'
+              AND source NOT LIKE '%twohop%'
+              AND source NOT LIKE '%multihop%'
+
             UNION ALL
-            
+
             SELECT
                 quote_coin AS token,
                 source,
@@ -163,6 +178,10 @@ class LiquidityAnalyzer:
                     quote_coin = '{SOL_ADDRESS}' OR quote_coin IN ('{usdc}', '{usdt}')
                     OR base_coin = '{SOL_ADDRESS}' OR base_coin IN ('{usdc}', '{usdt}')
                 )
+            WHERE source NOT IN ({excluded_sources_sql})
+              AND source NOT LIKE '%_route%'
+              AND source NOT LIKE '%twohop%'
+              AND source NOT LIKE '%multihop%'
         ),
         
         -- 2. Aggregate per POOL to find the latest state and approximate liquidity

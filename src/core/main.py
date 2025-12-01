@@ -228,10 +228,13 @@ class TokenAggregationWorker:
                 pl.col('total_burned').fill_null(0)
             ])
             df_tokens = df_tokens.with_columns([
-                ((pl.col('total_minted') - pl.col('total_burned')) /
-                 pl.when(pl.col('decimals').is_not_null())
-                 .then(10.0 ** pl.col('decimals'))
-                 .otherwise(1e9)).alias('supply')
+                pl.max_horizontal(
+                    pl.lit(0.0),
+                    (pl.col('total_minted').cast(pl.Float64) - pl.col('total_burned').cast(pl.Float64)) /
+                    pl.when(pl.col('decimals').is_not_null())
+                    .then(10.0 ** pl.col('decimals'))
+                    .otherwise(1e9)
+                ).alias('supply')
             ])
             df_tokens = df_tokens.with_columns([
                 (pl.col('price_usd') * pl.col('supply')).alias('market_cap_usd')
@@ -344,11 +347,15 @@ class TokenAggregationWorker:
         ])
 
         # Calculate normalized supply using actual decimals (default to 9 if missing)
+        # Use max(0, ...) to handle cases where burns > mints (bridged/wrapped tokens with incomplete data)
         df_tokens = df_tokens.with_columns([
-            ((pl.col('total_minted') - pl.col('total_burned')) /
-             pl.when(pl.col('decimals').is_not_null())
-             .then(10.0 ** pl.col('decimals'))
-             .otherwise(1e9)).alias('supply')
+            pl.max_horizontal(
+                pl.lit(0.0),
+                (pl.col('total_minted').cast(pl.Float64) - pl.col('total_burned').cast(pl.Float64)) /
+                pl.when(pl.col('decimals').is_not_null())
+                .then(10.0 ** pl.col('decimals'))
+                .otherwise(1e9)
+            ).alias('supply')
         ])
 
         # Calculate market cap = price_usd * supply

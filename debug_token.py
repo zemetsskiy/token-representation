@@ -89,6 +89,14 @@ def debug_token(token_address: str, sol_price_usd: float = 235.0):
     print("2. AGGREGATED POOL STATS (best pool selection)")
     print("-" * 100)
 
+    # Exclude routing/multi-hop sources that don't have real pool balances
+    excluded_sources_filter = """
+        AND source NOT IN ('orca_swap_twohop', 'jupiter_route', 'raydium_route', 'meteora_route')
+        AND source NOT LIKE '%_route%'
+        AND source NOT LIKE '%twohop%'
+        AND source NOT LIKE '%multihop%'
+    """
+
     agg_query = f"""
     WITH unified_swaps AS (
         SELECT
@@ -121,6 +129,7 @@ def debug_token(token_address: str, sol_price_usd: float = 235.0):
               OR base_coin = '{SOL_ADDRESS}'
               OR base_coin IN ('{USDC_ADDRESS}', '{USDT_ADDRESS}')
           )
+          {excluded_sources_filter}
 
         UNION ALL
 
@@ -154,6 +163,7 @@ def debug_token(token_address: str, sol_price_usd: float = 235.0):
               OR base_coin = '{SOL_ADDRESS}'
               OR base_coin IN ('{USDC_ADDRESS}', '{USDT_ADDRESS}')
           )
+          {excluded_sources_filter}
     ),
     pool_stats AS (
         SELECT
@@ -282,12 +292,24 @@ def debug_token(token_address: str, sol_price_usd: float = 235.0):
         print(f"Total Minted Raw: {minted:,.0f}")
         print(f"Total Burned Raw: {burned:,.0f}")
         print(f"Supply Raw: {supply_raw:,.0f}")
+
+        if supply_raw < 0:
+            print()
+            print("⚠️  WARNING: Burns > Mints! This indicates:")
+            print("   - Bridged/wrapped token with incomplete mint history")
+            print("   - Or data collection started after token creation")
+            print("   - Supply will be set to 0 in production")
+            supply_normalized = 0
+
         print(f"Supply Normalized (6 decimals): {supply_normalized:,.2f}")
 
-        if results and token_normalized > 0:
+        if results and token_normalized > 0 and supply_normalized > 0:
             market_cap = price_usd * supply_normalized
             print()
             print(f"Market Cap USD: ${market_cap:,.2f}")
+        elif supply_normalized <= 0:
+            print()
+            print("⚠️  Market Cap: Cannot calculate (supply <= 0)")
 
     print()
     print("=" * 100)
