@@ -153,13 +153,26 @@ def debug_token(token_address: str, sol_price_usd: float = 235.0):
     print("2. AGGREGATED POOL STATS (best pool selection)")
     print("-" * 100)
 
-    # Exclude routing/multi-hop sources that don't have real pool balances
-    excluded_sources_filter = """
-        AND source NOT IN ('orca_swap_twohop', 'jupiter_route', 'raydium_route', 'meteora_route')
-        AND source NOT LIKE '%_route%'
-        AND source NOT LIKE '%twohop%'
-        AND source NOT LIKE '%multihop%'
-    """
+    # ONLY include direct DEX sources with accurate pool balances
+    allowed_sources = [
+        'pumpfun_bondingcurve',
+        'raydium_swap_v4',
+        'raydium_swap_cpmm',
+        'raydium_swap_clmm',
+        'raydium_swap_stable',
+        'raydium_bondingcurve',
+        'meteora_swap_dlmm',
+        'meteora_swap_pools',
+        'meteora_swap_damm',
+        'meteora_bondingcurve',
+        'orca_swap',
+        'phoenix_swap',
+        'lifinity_swap_v2',
+        'pumpswap_swap',
+        'degenfund',
+    ]
+    allowed_sources_sql = ', '.join([f"'{s}'" for s in allowed_sources])
+    allowed_sources_filter = f"AND source IN ({allowed_sources_sql})"
 
     agg_query = f"""
     WITH unified_swaps AS (
@@ -193,7 +206,7 @@ def debug_token(token_address: str, sol_price_usd: float = 235.0):
               OR base_coin = '{SOL_ADDRESS}'
               OR base_coin IN ('{USDC_ADDRESS}', '{USDT_ADDRESS}')
           )
-          {excluded_sources_filter}
+          {allowed_sources_filter}
 
         UNION ALL
 
@@ -227,7 +240,7 @@ def debug_token(token_address: str, sol_price_usd: float = 235.0):
               OR base_coin = '{SOL_ADDRESS}'
               OR base_coin IN ('{USDC_ADDRESS}', '{USDT_ADDRESS}')
           )
-          {excluded_sources_filter}
+          {allowed_sources_filter}
     ),
     pool_stats AS (
         SELECT

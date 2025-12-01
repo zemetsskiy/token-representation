@@ -96,15 +96,27 @@ class LiquidityAnalyzer:
         usdc = STABLECOINS['USDC']
         usdt = STABLECOINS['USDT']
 
-        # Exclude routing/multi-hop sources that don't represent real pool balances
-        # These sources aggregate across multiple pools and don't have accurate per-pool balances
-        excluded_sources = [
-            'orca_swap_twohop',
-            'jupiter_route',
-            'raydium_route',
-            'meteora_route',
+        # ONLY include direct DEX sources with accurate pool balances
+        # Exclude all aggregators (jupiter*, raydium_route*) as they don't have real per-pool balances
+        allowed_sources = [
+            # Direct DEX sources only
+            'pumpfun_bondingcurve',
+            'raydium_swap_v4',
+            'raydium_swap_cpmm',
+            'raydium_swap_clmm',
+            'raydium_swap_stable',
+            'raydium_bondingcurve',
+            'meteora_swap_dlmm',
+            'meteora_swap_pools',
+            'meteora_swap_damm',
+            'meteora_bondingcurve',
+            'orca_swap',
+            'phoenix_swap',
+            'lifinity_swap_v2',
+            'pumpswap_swap',
+            'degenfund',
         ]
-        excluded_sources_sql = ', '.join([f"'{s}'" for s in excluded_sources])
+        allowed_sources_sql = ', '.join([f"'{s}'" for s in allowed_sources])
 
         query = f"""
         WITH
@@ -142,10 +154,7 @@ class LiquidityAnalyzer:
                     quote_coin = '{SOL_ADDRESS}' OR quote_coin IN ('{usdc}', '{usdt}')
                     OR base_coin = '{SOL_ADDRESS}' OR base_coin IN ('{usdc}', '{usdt}')
                 )
-            WHERE source NOT IN ({excluded_sources_sql})
-              AND source NOT LIKE '%_route%'
-              AND source NOT LIKE '%twohop%'
-              AND source NOT LIKE '%multihop%'
+            WHERE source IN ({allowed_sources_sql})
 
             UNION ALL
 
@@ -178,10 +187,7 @@ class LiquidityAnalyzer:
                     quote_coin = '{SOL_ADDRESS}' OR quote_coin IN ('{usdc}', '{usdt}')
                     OR base_coin = '{SOL_ADDRESS}' OR base_coin IN ('{usdc}', '{usdt}')
                 )
-            WHERE source NOT IN ({excluded_sources_sql})
-              AND source NOT LIKE '%_route%'
-              AND source NOT LIKE '%twohop%'
-              AND source NOT LIKE '%multihop%'
+            WHERE source IN ({allowed_sources_sql})
         ),
         
         -- 2. Aggregate per POOL to find the latest state and approximate liquidity
