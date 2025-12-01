@@ -126,7 +126,7 @@ class PriceCalculator:
         log10 = math.log(10.0)
         df_prices = df_prices.with_columns([
             pl.when(
-                pl.col('token_balance_raw') > 0
+                (pl.col('token_balance_raw') > 0)
                 & pl.col('token_decimals').is_not_null()
                 & pl.col('reference_decimals').is_not_null()
             )
