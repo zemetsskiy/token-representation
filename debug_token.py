@@ -148,12 +148,7 @@ def debug_token(token_address: str, sol_price_usd: float = 235.0):
         print(f"  Time: {row['block_time']}")
         print()
 
-    # 2. Aggregated pool stats (как делает наш worker)
-    print()
-    print("2. AGGREGATED POOL STATS (best pool selection)")
-    print("-" * 100)
-
-    # ONLY include direct DEX sources with accurate pool balances
+    # ONLY include direct DEX sources
     allowed_sources = [
         'pumpfun_bondingcurve',
         'raydium_swap_v4',
@@ -174,158 +169,12 @@ def debug_token(token_address: str, sol_price_usd: float = 235.0):
     allowed_sources_sql = ', '.join([f"'{s}'" for s in allowed_sources])
     allowed_sources_filter = f"AND source IN ({allowed_sources_sql})"
 
-    agg_query = f"""
-    WITH unified_swaps AS (
-        SELECT
-            base_coin AS token,
-            source,
-            base_coin,
-            quote_coin,
-            base_pool_balance_after,
-            quote_pool_balance_after,
-            block_time,
-            CASE
-                WHEN quote_coin = '{SOL_ADDRESS}' THEN 'SOL'
-                WHEN quote_coin IN ('{USDC_ADDRESS}', '{USDT_ADDRESS}') THEN 'STABLE'
-                WHEN base_coin = '{SOL_ADDRESS}' THEN 'SOL'
-                WHEN base_coin IN ('{USDC_ADDRESS}', '{USDT_ADDRESS}') THEN 'STABLE'
-                ELSE 'OTHER'
-            END as ref_type,
-            CASE
-                WHEN quote_coin = '{SOL_ADDRESS}' THEN quote_pool_balance_after
-                WHEN quote_coin IN ('{USDC_ADDRESS}', '{USDT_ADDRESS}') THEN quote_pool_balance_after
-                WHEN base_coin = '{SOL_ADDRESS}' THEN base_pool_balance_after
-                WHEN base_coin IN ('{USDC_ADDRESS}', '{USDT_ADDRESS}') THEN base_pool_balance_after
-                ELSE 0
-            END as ref_balance_raw
-        FROM solana.swaps
-        WHERE base_coin = '{token_address}'
-          AND (
-              quote_coin = '{SOL_ADDRESS}'
-              OR quote_coin IN ('{USDC_ADDRESS}', '{USDT_ADDRESS}')
-              OR base_coin = '{SOL_ADDRESS}'
-              OR base_coin IN ('{USDC_ADDRESS}', '{USDT_ADDRESS}')
-          )
-          {allowed_sources_filter}
-
-        UNION ALL
-
-        SELECT
-            quote_coin AS token,
-            source,
-            base_coin,
-            quote_coin,
-            base_pool_balance_after,
-            quote_pool_balance_after,
-            block_time,
-            CASE
-                WHEN quote_coin = '{SOL_ADDRESS}' THEN 'SOL'
-                WHEN quote_coin IN ('{USDC_ADDRESS}', '{USDT_ADDRESS}') THEN 'STABLE'
-                WHEN base_coin = '{SOL_ADDRESS}' THEN 'SOL'
-                WHEN base_coin IN ('{USDC_ADDRESS}', '{USDT_ADDRESS}') THEN 'STABLE'
-                ELSE 'OTHER'
-            END as ref_type,
-            CASE
-                WHEN quote_coin = '{SOL_ADDRESS}' THEN quote_pool_balance_after
-                WHEN quote_coin IN ('{USDC_ADDRESS}', '{USDT_ADDRESS}') THEN quote_pool_balance_after
-                WHEN base_coin = '{SOL_ADDRESS}' THEN base_pool_balance_after
-                WHEN base_coin IN ('{USDC_ADDRESS}', '{USDT_ADDRESS}') THEN base_pool_balance_after
-                ELSE 0
-            END as ref_balance_raw
-        FROM solana.swaps
-        WHERE quote_coin = '{token_address}'
-          AND (
-              quote_coin = '{SOL_ADDRESS}'
-              OR quote_coin IN ('{USDC_ADDRESS}', '{USDT_ADDRESS}')
-              OR base_coin = '{SOL_ADDRESS}'
-              OR base_coin IN ('{USDC_ADDRESS}', '{USDT_ADDRESS}')
-          )
-          {allowed_sources_filter}
-    ),
-    pool_stats AS (
-        SELECT
-            token,
-            source,
-            base_coin,
-            quote_coin,
-            argMax(base_pool_balance_after, block_time) as latest_base_bal,
-            argMax(quote_pool_balance_after, block_time) as latest_quote_bal,
-            argMax(
-                CASE
-                    WHEN ref_type = 'SOL' THEN (ref_balance_raw / 1e9) * {sol_price_usd}
-                    WHEN ref_type = 'STABLE' THEN (ref_balance_raw / 1e6)
-                    ELSE 0
-                END,
-                block_time
-            ) as liquidity_score_usd
-        FROM unified_swaps
-        GROUP BY token, source, base_coin, quote_coin
-    )
-    SELECT *
-    FROM pool_stats
-    ORDER BY liquidity_score_usd DESC
-    """
-
-    results = db_client.execute_query_dict(agg_query)
-    print(f"Found {len(results)} unique pools")
+    # 2. VWAP Price calculation (Trade-Based)
     print()
-
-    # Fetch token decimals once for price calculations
-    print("Fetching token decimals from RPC...")
-    token_decimals = fetch_token_decimals(token_address)
-    print(f"Token decimals: {token_decimals}")
-    print()
-
-    for i, row in enumerate(results[:10]):
-        # Clean binary strings
-        base_coin_raw = row['base_coin']
-        quote_coin_raw = row['quote_coin']
-        base_coin_str = base_coin_raw.decode('utf-8').rstrip('\x00') if isinstance(base_coin_raw, bytes) else str(base_coin_raw).rstrip('\x00')
-        quote_coin_str = quote_coin_raw.decode('utf-8').rstrip('\x00') if isinstance(quote_coin_raw, bytes) else str(quote_coin_raw).rstrip('\x00')
-
-        base_bal = row['latest_base_bal']
-        quote_bal = row['latest_quote_bal']
-
-        # Determine token vs reference
-        if base_coin_str == token_address:
-            token_balance = base_bal
-            ref_balance = quote_bal
-            ref_coin = quote_coin_str
-        else:
-            token_balance = quote_bal
-            ref_balance = base_bal
-            ref_coin = base_coin_str
-
-        # Determine reference decimals
-        if ref_coin == SOL_ADDRESS:
-            ref_decimals = 9
-            ref_price_usd = sol_price_usd
-        else:
-            ref_decimals = 6
-            ref_price_usd = 1.0
-
-        # Calculate price
-        token_normalized = token_balance / (10 ** token_decimals)
-        ref_normalized = ref_balance / (10 ** ref_decimals)
-
-        if token_normalized > 0:
-            price_usd = (ref_normalized / token_normalized) * ref_price_usd
-        else:
-            price_usd = 0
-
-        # Calculate liquidity (reference side * 2)
-        liquidity_usd = ref_normalized * ref_price_usd * 2
-
-        print(f"Pool {i+1}: {row['source']}")
-        print(f"  Base: {base_coin_str[:16]}... | Quote: {quote_coin_str[:16]}...")
-        print(f"  Token Balance: {token_normalized:,.2f} | Ref Balance: {ref_normalized:,.2f}")
-        print(f"  Price USD: ${price_usd:.6f} | Liquidity USD: ${liquidity_usd:,.2f}")
-        print()
-
-    # 3. VWAP Price calculation (Trade-Based)
-    print()
-    print("3. VWAP PRICE CALCULATION (Trade-Based)")
+    print("2. VWAP PRICE CALCULATION (Trade-Based)")
     print("-" * 100)
+
+    price_usd = 0  # Will be set by VWAP calculation
 
     vwap_query = f"""
     WITH unified_trades AS (
@@ -450,87 +299,9 @@ def debug_token(token_address: str, sol_price_usd: float = 235.0):
             print("No valid VWAP data found!")
         print()
 
-    # Keep old pool-based calc for comparison
-    if results:
-        best_pool = results[0]
-        print()
-        print("4. POOL-BASED PRICE (for comparison - DEPRECATED)")
-        print("-" * 100)
-
-        base_coin = best_pool['base_coin']
-        quote_coin = best_pool['quote_coin']
-        base_bal = best_pool['latest_base_bal']
-        quote_bal = best_pool['latest_quote_bal']
-
-        print(f"Best Pool Source: {best_pool['source']}")
-        print(f"Liquidity Score: ${best_pool['liquidity_score_usd']:,.2f}")
-        print()
-
-        # Determine which is the token and which is reference
-        # Handle binary strings from ClickHouse
-        base_coin_str = base_coin.decode('utf-8').rstrip('\x00') if isinstance(base_coin, bytes) else str(base_coin).rstrip('\x00')
-        quote_coin_str = quote_coin.decode('utf-8').rstrip('\x00') if isinstance(quote_coin, bytes) else str(quote_coin).rstrip('\x00')
-
-        print(f"Base Coin (cleaned): {base_coin_str}")
-        print(f"Quote Coin (cleaned): {quote_coin_str}")
-        print(f"Looking for token: {token_address}")
-        print()
-
-        if base_coin_str == token_address:
-            token_balance = base_bal
-            ref_balance = quote_bal
-            ref_coin = quote_coin_str
-            print("TOKEN is BASE, REFERENCE is QUOTE")
-        else:
-            token_balance = quote_bal
-            ref_balance = base_bal
-            ref_coin = base_coin_str
-            print("TOKEN is QUOTE, REFERENCE is BASE")
-
-        # Fetch real decimals from RPC
-        print()
-        print("Fetching token decimals from RPC...")
-        token_decimals = fetch_token_decimals(token_address)
-        print(f"Token decimals from RPC: {token_decimals}")
-
-        # Determine reference decimals
-        if ref_coin == SOL_ADDRESS:
-            ref_decimals = 9
-            ref_name = "SOL"
-            ref_price_usd = sol_price_usd
-        else:
-            ref_decimals = 6
-            ref_name = "STABLE"
-            ref_price_usd = 1.0
-
-        print(f"Token Balance Raw: {token_balance:,.0f} (decimals={token_decimals})")
-        print(f"Reference ({ref_name}) Balance Raw: {ref_balance:,.0f} (decimals={ref_decimals})")
-        print()
-
-        # Normalize
-        token_normalized = token_balance / (10 ** token_decimals)
-        ref_normalized = ref_balance / (10 ** ref_decimals)
-
-        print(f"Token Normalized: {token_normalized:,.6f}")
-        print(f"Reference Normalized: {ref_normalized:,.6f}")
-        print()
-
-        # Price calculation
-        if token_normalized > 0:
-            price_per_ref = ref_normalized / token_normalized
-            price_usd = price_per_ref * ref_price_usd
-
-            print(f"Price per {ref_name}: {price_per_ref:.10f}")
-            print(f"Price USD: ${price_usd:.10f}")
-            print()
-
-            # Liquidity calculation
-            liquidity_usd = ref_normalized * ref_price_usd * 2
-            print(f"Largest LP Pool USD: ${liquidity_usd:,.2f}")
-
-    # 5. Check mints/burns for supply
+    # 3. Check mints/burns for supply
     print()
-    print("5. SUPPLY DATA (mints - burns)")
+    print("3. SUPPLY DATA (mints - burns)")
     print("-" * 100)
 
     supply_query = f"""
@@ -544,7 +315,7 @@ def debug_token(token_address: str, sol_price_usd: float = 235.0):
         minted = supply_result[0]['total_minted']
         burned = supply_result[0]['total_burned']
         supply_raw = minted - burned
-        supply_normalized = supply_raw / (10 ** 6)  # assume 6 decimals
+        supply_normalized = supply_raw / (10 ** token_decimals)
 
         print(f"Total Minted Raw: {minted:,.0f}")
         print(f"Total Burned Raw: {burned:,.0f}")
@@ -552,21 +323,21 @@ def debug_token(token_address: str, sol_price_usd: float = 235.0):
 
         if supply_raw < 0:
             print()
-            print("⚠️  WARNING: Burns > Mints! This indicates:")
+            print("WARNING: Burns > Mints! This indicates:")
             print("   - Bridged/wrapped token with incomplete mint history")
             print("   - Or data collection started after token creation")
             print("   - Supply will be set to 0 in production")
             supply_normalized = 0
 
-        print(f"Supply Normalized (6 decimals): {supply_normalized:,.2f}")
+        print(f"Supply Normalized ({token_decimals} decimals): {supply_normalized:,.2f}")
 
-        if results and token_normalized > 0 and supply_normalized > 0:
+        if supply_normalized > 0 and price_usd > 0:
             market_cap = price_usd * supply_normalized
             print()
             print(f"Market Cap USD: ${market_cap:,.2f}")
         elif supply_normalized <= 0:
             print()
-            print("⚠️  Market Cap: Cannot calculate (supply <= 0)")
+            print("WARNING: Market Cap: Cannot calculate (supply <= 0)")
 
     print()
     print("=" * 100)
