@@ -176,12 +176,13 @@ def debug_token(token_address: str, sol_price_usd: float = 235.0):
 
     price_usd = 0  # Will be set by VWAP calculation
 
-    vwap_query = f"""
-    WITH unified_trades AS (
+    # Step 1: Find best pool by liquidity
+    best_pool_query = f"""
+    WITH unified_swaps AS (
         SELECT
-            base_coin AS token,
-            base_coin_amount AS token_amount,
-            quote_coin_amount AS ref_amount,
+            source,
+            base_coin,
+            quote_coin,
             quote_pool_balance_after AS ref_balance_raw,
             CASE
                 WHEN quote_coin = '{SOL_ADDRESS}' THEN 'SOL'
@@ -193,14 +194,13 @@ def debug_token(token_address: str, sol_price_usd: float = 235.0):
         WHERE base_coin = '{token_address}'
           AND (quote_coin = '{SOL_ADDRESS}' OR quote_coin IN ('{USDC_ADDRESS}', '{USDT_ADDRESS}'))
           {allowed_sources_filter}
-          AND base_coin_amount > 0 AND quote_coin_amount > 0
 
         UNION ALL
 
         SELECT
-            quote_coin AS token,
-            quote_coin_amount AS token_amount,
-            base_coin_amount AS ref_amount,
+            source,
+            base_coin,
+            quote_coin,
             base_pool_balance_after AS ref_balance_raw,
             CASE
                 WHEN base_coin = '{SOL_ADDRESS}' THEN 'SOL'
@@ -212,116 +212,141 @@ def debug_token(token_address: str, sol_price_usd: float = 235.0):
         WHERE quote_coin = '{token_address}'
           AND (base_coin = '{SOL_ADDRESS}' OR base_coin IN ('{USDC_ADDRESS}', '{USDT_ADDRESS}'))
           {allowed_sources_filter}
-          AND base_coin_amount > 0 AND quote_coin_amount > 0
     )
     SELECT
-        -- STABLE VWAP (6 decimals)
-        sumIf(ref_amount, block_time >= now() - INTERVAL 5 MINUTE AND ref_type = 'STABLE')
-            / greatest(sumIf(token_amount, block_time >= now() - INTERVAL 5 MINUTE AND ref_type = 'STABLE'), 1) AS stable_vwap_5m,
-        countIf(block_time >= now() - INTERVAL 5 MINUTE AND ref_type = 'STABLE') AS stable_trades_5m,
-        sumIf(ref_amount, block_time >= now() - INTERVAL 1 HOUR AND ref_type = 'STABLE')
-            / greatest(sumIf(token_amount, block_time >= now() - INTERVAL 1 HOUR AND ref_type = 'STABLE'), 1) AS stable_vwap_1h,
-        countIf(block_time >= now() - INTERVAL 1 HOUR AND ref_type = 'STABLE') AS stable_trades_1h,
-        sumIf(ref_amount, block_time >= now() - INTERVAL 24 HOUR AND ref_type = 'STABLE')
-            / greatest(sumIf(token_amount, block_time >= now() - INTERVAL 24 HOUR AND ref_type = 'STABLE'), 1) AS stable_vwap_24h,
-        countIf(block_time >= now() - INTERVAL 24 HOUR AND ref_type = 'STABLE') AS stable_trades_24h,
-        argMaxIf(ref_amount / token_amount, block_time, ref_type = 'STABLE') AS stable_last,
-        -- Max liquidity for STABLE pools
-        maxIf(ref_balance_raw / 1e6, ref_type = 'STABLE') AS stable_max_liq_usd,
-
-        -- SOL VWAP (9 decimals)
-        sumIf(ref_amount, block_time >= now() - INTERVAL 5 MINUTE AND ref_type = 'SOL')
-            / greatest(sumIf(token_amount, block_time >= now() - INTERVAL 5 MINUTE AND ref_type = 'SOL'), 1) AS sol_vwap_5m,
-        countIf(block_time >= now() - INTERVAL 5 MINUTE AND ref_type = 'SOL') AS sol_trades_5m,
-        sumIf(ref_amount, block_time >= now() - INTERVAL 1 HOUR AND ref_type = 'SOL')
-            / greatest(sumIf(token_amount, block_time >= now() - INTERVAL 1 HOUR AND ref_type = 'SOL'), 1) AS sol_vwap_1h,
-        countIf(block_time >= now() - INTERVAL 1 HOUR AND ref_type = 'SOL') AS sol_trades_1h,
-        sumIf(ref_amount, block_time >= now() - INTERVAL 24 HOUR AND ref_type = 'SOL')
-            / greatest(sumIf(token_amount, block_time >= now() - INTERVAL 24 HOUR AND ref_type = 'SOL'), 1) AS sol_vwap_24h,
-        countIf(block_time >= now() - INTERVAL 24 HOUR AND ref_type = 'SOL') AS sol_trades_24h,
-        argMaxIf(ref_amount / token_amount, block_time, ref_type = 'SOL') AS sol_last,
-        -- Max liquidity for SOL pools (converted to USD)
-        maxIf((ref_balance_raw / 1e9) * {sol_price_usd}, ref_type = 'SOL') AS sol_max_liq_usd
-
-    FROM unified_trades
+        argMax(source, CASE
+            WHEN ref_type = 'SOL' THEN ref_balance_raw / 1e9 * {sol_price_usd}
+            WHEN ref_type = 'STABLE' THEN ref_balance_raw / 1e6
+            ELSE 0
+        END) AS best_source,
+        argMax(base_coin, CASE
+            WHEN ref_type = 'SOL' THEN ref_balance_raw / 1e9 * {sol_price_usd}
+            WHEN ref_type = 'STABLE' THEN ref_balance_raw / 1e6
+            ELSE 0
+        END) AS best_base_coin,
+        argMax(quote_coin, CASE
+            WHEN ref_type = 'SOL' THEN ref_balance_raw / 1e9 * {sol_price_usd}
+            WHEN ref_type = 'STABLE' THEN ref_balance_raw / 1e6
+            ELSE 0
+        END) AS best_quote_coin,
+        argMax(ref_type, CASE
+            WHEN ref_type = 'SOL' THEN ref_balance_raw / 1e9 * {sol_price_usd}
+            WHEN ref_type = 'STABLE' THEN ref_balance_raw / 1e6
+            ELSE 0
+        END) AS best_ref_type,
+        max(CASE
+            WHEN ref_type = 'SOL' THEN ref_balance_raw / 1e9 * {sol_price_usd}
+            WHEN ref_type = 'STABLE' THEN ref_balance_raw / 1e6
+            ELSE 0
+        END) AS best_liquidity_usd
+    FROM unified_swaps
     WHERE ref_type != 'OTHER'
     """
 
-    vwap_results = db_client.execute_query_dict(vwap_query)
-    if vwap_results:
-        vwap = vwap_results[0]
+    best_pool_result = db_client.execute_query_dict(best_pool_query)
+    if not best_pool_result or not best_pool_result[0]['best_source']:
+        print("No pools found for this token!")
+        print()
+    else:
+        bp = best_pool_result[0]
+        best_source = bp['best_source']
+        best_base = bp['best_base_coin'].decode('utf-8').rstrip('\x00') if isinstance(bp['best_base_coin'], bytes) else str(bp['best_base_coin']).rstrip('\x00')
+        best_quote = bp['best_quote_coin'].decode('utf-8').rstrip('\x00') if isinstance(bp['best_quote_coin'], bytes) else str(bp['best_quote_coin']).rstrip('\x00')
+        best_ref_type = bp['best_ref_type']
+        best_liq = bp['best_liquidity_usd']
 
-        # Determine best pool by max liquidity
-        stable_liq = vwap['stable_max_liq_usd'] or 0
-        sol_liq = vwap['sol_max_liq_usd'] or 0
-        best_pool_ref_type = 'STABLE' if stable_liq >= sol_liq else 'SOL'
-
-        print(f"Best Pool by Liquidity: {best_pool_ref_type}")
-        print(f"  STABLE max liquidity: ${stable_liq:,.2f}")
-        print(f"  SOL max liquidity:    ${sol_liq:,.2f}")
+        print(f"Best Pool: {best_source}")
+        print(f"  Pair: {best_base[:16]}... / {best_quote[:16]}...")
+        print(f"  Ref Type: {best_ref_type}")
+        print(f"  Liquidity: ${best_liq:,.2f}")
         print()
 
-        print("STABLE Pairs (USDC/USDT - direct USD):")
-        print(f"  5 min:  {vwap['stable_trades_5m']:>4} trades | Raw: {vwap['stable_vwap_5m']:.10f}")
-        print(f"  1 hour: {vwap['stable_trades_1h']:>4} trades | Raw: {vwap['stable_vwap_1h']:.10f}")
-        print(f"  24 hour:{vwap['stable_trades_24h']:>4} trades | Raw: {vwap['stable_vwap_24h']:.10f}")
-        print(f"  Last:                  | Raw: {vwap['stable_last']:.10f}" if vwap['stable_last'] else "  Last:                  | Raw: 0")
-        print()
+        # Step 2: Calculate VWAP only from this specific pool
+        vwap_query = f"""
+        SELECT
+            sumIf(token_amount, block_time >= now() - INTERVAL 5 MINUTE) AS sum_token_5m,
+            sumIf(ref_amount, block_time >= now() - INTERVAL 5 MINUTE) AS sum_ref_5m,
+            countIf(block_time >= now() - INTERVAL 5 MINUTE) AS trades_5m,
 
-        print("SOL Pairs (needs SOL->USD conversion):")
-        print(f"  5 min:  {vwap['sol_trades_5m']:>4} trades | Raw: {vwap['sol_vwap_5m']:.10f}")
-        print(f"  1 hour: {vwap['sol_trades_1h']:>4} trades | Raw: {vwap['sol_vwap_1h']:.10f}")
-        print(f"  24 hour:{vwap['sol_trades_24h']:>4} trades | Raw: {vwap['sol_vwap_24h']:.10f}")
-        print(f"  Last:                  | Raw: {vwap['sol_last']:.10f}" if vwap['sol_last'] else "  Last:                  | Raw: 0")
-        print()
+            sumIf(token_amount, block_time >= now() - INTERVAL 1 HOUR) AS sum_token_1h,
+            sumIf(ref_amount, block_time >= now() - INTERVAL 1 HOUR) AS sum_ref_1h,
+            countIf(block_time >= now() - INTERVAL 1 HOUR) AS trades_1h,
 
-        # Selection based on best pool's ref_type
-        price_raw = 0
-        ref_type = None
-        method = None
+            sumIf(token_amount, block_time >= now() - INTERVAL 24 HOUR) AS sum_token_24h,
+            sumIf(ref_amount, block_time >= now() - INTERVAL 24 HOUR) AS sum_ref_24h,
+            countIf(block_time >= now() - INTERVAL 24 HOUR) AS trades_24h,
 
-        if best_pool_ref_type == 'STABLE':
-            # Use STABLE VWAP
-            if vwap['stable_trades_5m'] >= 3:
-                price_raw, ref_type, method = vwap['stable_vwap_5m'], 'STABLE', 'STABLE_VWAP_5M'
-            elif vwap['stable_trades_1h'] >= 5:
-                price_raw, ref_type, method = vwap['stable_vwap_1h'], 'STABLE', 'STABLE_VWAP_1H'
-            elif vwap['stable_trades_24h'] >= 5:
-                price_raw, ref_type, method = vwap['stable_vwap_24h'], 'STABLE', 'STABLE_VWAP_24H'
-            elif vwap['stable_last'] and vwap['stable_last'] > 0:
-                price_raw, ref_type, method = vwap['stable_last'], 'STABLE', 'STABLE_LAST'
-        else:
-            # Use SOL VWAP
-            if vwap['sol_trades_5m'] >= 3:
-                price_raw, ref_type, method = vwap['sol_vwap_5m'], 'SOL', 'SOL_VWAP_5M'
-            elif vwap['sol_trades_1h'] >= 5:
-                price_raw, ref_type, method = vwap['sol_vwap_1h'], 'SOL', 'SOL_VWAP_1H'
-            elif vwap['sol_trades_24h'] >= 5:
-                price_raw, ref_type, method = vwap['sol_vwap_24h'], 'SOL', 'SOL_VWAP_24H'
-            elif vwap['sol_last'] and vwap['sol_last'] > 0:
-                price_raw, ref_type, method = vwap['sol_last'], 'SOL', 'SOL_LAST'
+            argMax(ref_amount / token_amount, block_time) AS last_price_raw
+        FROM (
+            SELECT
+                base_coin_amount AS token_amount,
+                quote_coin_amount AS ref_amount,
+                block_time
+            FROM solana.swaps
+            WHERE base_coin = '{token_address}'
+              AND source = '{best_source}'
+              AND base_coin = '{best_base}'
+              AND quote_coin = '{best_quote}'
+              AND base_coin_amount > 0 AND quote_coin_amount > 0
 
-        # Fallback if best pool has no trades
-        if not price_raw:
-            if vwap['stable_last'] and vwap['stable_last'] > 0:
-                price_raw, ref_type, method = vwap['stable_last'], 'STABLE', 'STABLE_LAST (fallback)'
-            elif vwap['sol_last'] and vwap['sol_last'] > 0:
-                price_raw, ref_type, method = vwap['sol_last'], 'SOL', 'SOL_LAST (fallback)'
+            UNION ALL
 
-        if price_raw and ref_type:
-            ref_decimals = 9 if ref_type == 'SOL' else 6
-            ref_price_usd = sol_price_usd if ref_type == 'SOL' else 1.0
+            SELECT
+                quote_coin_amount AS token_amount,
+                base_coin_amount AS ref_amount,
+                block_time
+            FROM solana.swaps
+            WHERE quote_coin = '{token_address}'
+              AND source = '{best_source}'
+              AND base_coin = '{best_base}'
+              AND quote_coin = '{best_quote}'
+              AND base_coin_amount > 0 AND quote_coin_amount > 0
+        )
+        """
 
-            # Convert to USD
-            price_per_ref = price_raw * (10 ** (token_decimals - ref_decimals))
-            price_usd = price_per_ref * ref_price_usd
+        vwap_results = db_client.execute_query_dict(vwap_query)
+        if vwap_results:
+            vwap = vwap_results[0]
 
-            print(f"Selected Method: {method}")
-            print(f"Price Raw: {price_raw:.10f}")
-            print(f"Price per {ref_type}: {price_per_ref:.10f}")
-            print(f"PRICE USD: ${price_usd:.6f}")
-        else:
-            print("No valid VWAP data found!")
+            # Calculate VWAPs
+            vwap_5m = vwap['sum_ref_5m'] / vwap['sum_token_5m'] if vwap['sum_token_5m'] > 0 else 0
+            vwap_1h = vwap['sum_ref_1h'] / vwap['sum_token_1h'] if vwap['sum_token_1h'] > 0 else 0
+            vwap_24h = vwap['sum_ref_24h'] / vwap['sum_token_24h'] if vwap['sum_token_24h'] > 0 else 0
+
+            print(f"VWAP from Best Pool ({best_source}):")
+            print(f"  5 min:  {vwap['trades_5m']:>4} trades | Raw: {vwap_5m:.10f}")
+            print(f"  1 hour: {vwap['trades_1h']:>4} trades | Raw: {vwap_1h:.10f}")
+            print(f"  24 hour:{vwap['trades_24h']:>4} trades | Raw: {vwap_24h:.10f}")
+            print(f"  Last:                  | Raw: {vwap['last_price_raw']:.10f}" if vwap['last_price_raw'] else "  Last:                  | Raw: 0")
+            print()
+
+            # Cascading selection
+            price_raw = 0
+            method = None
+
+            if vwap['trades_5m'] >= 3 and vwap_5m > 0:
+                price_raw, method = vwap_5m, f'{best_ref_type}_VWAP_5M'
+            elif vwap['trades_1h'] >= 5 and vwap_1h > 0:
+                price_raw, method = vwap_1h, f'{best_ref_type}_VWAP_1H'
+            elif vwap['trades_24h'] >= 5 and vwap_24h > 0:
+                price_raw, method = vwap_24h, f'{best_ref_type}_VWAP_24H'
+            elif vwap['last_price_raw'] and vwap['last_price_raw'] > 0:
+                price_raw, method = vwap['last_price_raw'], f'{best_ref_type}_LAST'
+
+            if price_raw:
+                ref_decimals = 9 if best_ref_type == 'SOL' else 6
+                ref_price_usd = sol_price_usd if best_ref_type == 'SOL' else 1.0
+
+                # Convert to USD
+                price_per_ref = price_raw * (10 ** (token_decimals - ref_decimals))
+                price_usd = price_per_ref * ref_price_usd
+
+                print(f"Selected Method: {method}")
+                print(f"Price Raw: {price_raw:.10f}")
+                print(f"Price per {best_ref_type}: {price_per_ref:.10f}")
+                print(f"PRICE USD: ${price_usd:.6f}")
+            else:
+                print("No valid VWAP data found in best pool!")
         print()
 
     # 3. Check mints/burns for supply
