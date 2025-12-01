@@ -10,7 +10,7 @@ services:
       - ../src:/app/src:ro
       - ../logs:/app/logs
     networks:
-      - token-network
+      - docker_token-network
     deploy:
       resources:
         limits:
@@ -32,5 +32,5 @@ services:
         max-file: "3"
 
 networks:
-  token-network:
-    driver: bridge
+  docker_token-network:
+    external: true

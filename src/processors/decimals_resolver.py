@@ -74,11 +74,22 @@ class DecimalsResolver:
                 for mint in batch:
                     self.decimals_cache.setdefault(mint, None)
         result = {}
+        found_count = 0
+        not_found_count = 0
         for addr in token_addresses:
             s = addr.decode('utf-8', errors='ignore') if isinstance(addr, (bytes, bytearray)) else str(addr)
             s = s.replace('\x00', '').strip()
-            result[s] = self.decimals_cache.get(s, None)
+            decimals = self.decimals_cache.get(s, None)
+            result[s] = decimals
+            if decimals is not None:
+                found_count += 1
+            else:
+                not_found_count += 1
+
         logger.info(f'Finished resolving decimals. Total cached: {len(self.decimals_cache)}')
+        logger.info(f'  Decimals found: {found_count}/{len(token_addresses)} ({100*found_count/len(token_addresses):.1f}%)')
+        if not_found_count > 0:
+            logger.info(f'  Decimals NOT found: {not_found_count} (token accounts may not exist on-chain)')
         return result
 
     def _parse_rpc_response(self, item: dict) -> tuple[int | None, bool]:

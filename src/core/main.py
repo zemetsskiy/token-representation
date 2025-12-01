@@ -367,10 +367,10 @@ class TokenAggregationWorker:
         """Print final results table."""
         logger.info('')
         logger.info('=' * 100)
-        logger.info('FINAL RESULTS')
+        logger.info('FINAL RESULTS (Top 10 by Market Cap)')
         logger.info('=' * 100)
 
-        # Select columns for display
+        # Select columns for display, sort by market_cap_usd descending
         df_display = df.select([
             'mint',
             'chain',
@@ -381,12 +381,19 @@ class TokenAggregationWorker:
             'supply',
             'largest_lp_pool_usd',
             'first_tx_date'
-        ]).head(10)
+        ]).sort('market_cap_usd', descending=True).head(10)
 
         print(df_display)
 
+        # Decimals statistics
+        total_tokens = len(df)
+        tokens_with_decimals = df.filter(pl.col('decimals').is_not_null()).height
+        tokens_without_decimals = total_tokens - tokens_with_decimals
+
         logger.info('=' * 100)
-        logger.info(f'Total tokens processed: {len(df):,}')
+        logger.info(f'Total tokens processed: {total_tokens:,}')
+        logger.info(f'Tokens with decimals: {tokens_with_decimals:,} ({100*tokens_with_decimals/total_tokens:.1f}%)')
+        logger.info(f'Tokens WITHOUT decimals: {tokens_without_decimals:,} ({100*tokens_without_decimals/total_tokens:.1f}%)')
         logger.info(f'Tokens with price data: {df.filter(pl.col("price_usd") > 0).height:,}')
         logger.info(f'Tokens with liquidity data: {df.filter(pl.col("largest_lp_pool_usd") > 0).height:,}')
         logger.info('=' * 100)
