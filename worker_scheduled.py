@@ -79,40 +79,15 @@ def calculate_next_run(view_name: str) -> datetime:
 
 def log_schedule_info(view_name: str, is_start: bool = True):
     """Log scheduling information at start or end of run."""
-    config = VIEW_CONFIGS[view_name]
     now = datetime.utcnow()
     next_run = calculate_next_run(view_name)
-    time_until_next = next_run - now
-
-    # Format time until next run
-    total_seconds = int(time_until_next.total_seconds())
+    total_seconds = int((next_run - now).total_seconds())
     hours, remainder = divmod(total_seconds, 3600)
     minutes, seconds = divmod(remainder, 60)
+    time_str = f"{hours}h {minutes}m" if hours > 0 else f"{minutes}m {seconds}s"
+    status = "STARTED" if is_start else "COMPLETED"
 
-    if hours > 0:
-        time_str = f"{hours}h {minutes}m {seconds}s"
-    elif minutes > 0:
-        time_str = f"{minutes}m {seconds}s"
-    else:
-        time_str = f"{seconds}s"
-
-    logger.info('')
-    logger.info('=' * 100)
-    logger.info(f'⏰ SCHEDULE INFO - {view_name}')
-    logger.info('=' * 100)
-    logger.info(f'  Cron Expression:    {config["cron"]}')
-    logger.info(f'  Schedule:           {config["schedule"]}')
-    logger.info(f'  Current Time (UTC): {now.strftime("%Y-%m-%d %H:%M:%S")}')
-
-    if is_start:
-        logger.info(f'  🚀 RUN STARTED:     {now.strftime("%Y-%m-%d %H:%M:%S")} UTC')
-    else:
-        logger.info(f'  ✅ RUN COMPLETED:   {now.strftime("%Y-%m-%d %H:%M:%S")} UTC')
-
-    logger.info(f'  ⏭️  Next Run:         {next_run.strftime("%Y-%m-%d %H:%M:%S")} UTC')
-    logger.info(f'  ⏳ Time Until Next:  {time_str}')
-    logger.info('=' * 100)
-    logger.info('')
+    logger.info(f'⏰ [{view_name}] {status} at {now.strftime("%H:%M:%S")} UTC | Next run: {next_run.strftime("%H:%M:%S")} UTC (in {time_str})')
 
 
 class ScheduledTokenWorker(TokenAggregationWorker):
