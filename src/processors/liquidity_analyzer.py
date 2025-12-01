@@ -198,62 +198,78 @@ class LiquidityAnalyzer:
               AND quote_coin_amount > 0
         ),
 
-        -- 2. Calculate VWAP prices with cascading fallback
+        -- 2. Calculate VWAP prices SEPARATELY for SOL and STABLE pairs (can't mix different decimals!)
         price_candidates AS (
             SELECT
                 token,
 
-                -- VWAP 5 minutes (most accurate for active tokens)
-                sumIf(ref_amount, block_time >= now() - INTERVAL 5 MINUTE)
-                    / greatest(sumIf(token_amount, block_time >= now() - INTERVAL 5 MINUTE), 1)
-                    AS vwap_5m_raw,
+                -- ========== STABLE PAIR VWAP (6 decimals) ==========
+                sumIf(ref_amount, block_time >= now() - INTERVAL 5 MINUTE AND ref_type = 'STABLE')
+                    / greatest(sumIf(token_amount, block_time >= now() - INTERVAL 5 MINUTE AND ref_type = 'STABLE'), 1)
+                    AS stable_vwap_5m_raw,
+                sumIf(ref_amount, block_time >= now() - INTERVAL 1 HOUR AND ref_type = 'STABLE')
+                    / greatest(sumIf(token_amount, block_time >= now() - INTERVAL 1 HOUR AND ref_type = 'STABLE'), 1)
+                    AS stable_vwap_1h_raw,
+                sumIf(ref_amount, block_time >= now() - INTERVAL 24 HOUR AND ref_type = 'STABLE')
+                    / greatest(sumIf(token_amount, block_time >= now() - INTERVAL 24 HOUR AND ref_type = 'STABLE'), 1)
+                    AS stable_vwap_24h_raw,
+                argMaxIf(ref_amount / token_amount, block_time, ref_type = 'STABLE') AS stable_last_price_raw,
+                countIf(block_time >= now() - INTERVAL 5 MINUTE AND ref_type = 'STABLE') AS stable_trades_5m,
+                countIf(block_time >= now() - INTERVAL 1 HOUR AND ref_type = 'STABLE') AS stable_trades_1h,
+                countIf(block_time >= now() - INTERVAL 24 HOUR AND ref_type = 'STABLE') AS stable_trades_24h,
 
-                -- VWAP 1 hour
-                sumIf(ref_amount, block_time >= now() - INTERVAL 1 HOUR)
-                    / greatest(sumIf(token_amount, block_time >= now() - INTERVAL 1 HOUR), 1)
-                    AS vwap_1h_raw,
-
-                -- VWAP 24 hours
-                sumIf(ref_amount, block_time >= now() - INTERVAL 24 HOUR)
-                    / greatest(sumIf(token_amount, block_time >= now() - INTERVAL 24 HOUR), 1)
-                    AS vwap_24h_raw,
-
-                -- Last price from trade > $10 equivalent
-                argMaxIf(
-                    ref_amount / token_amount,
-                    block_time,
-                    ref_amount > 10000000  -- > $10 for stables (6 decimals)
-                ) AS last_price_filtered_raw,
-
-                -- Any last price (fallback)
-                argMax(ref_amount / token_amount, block_time) AS last_price_any_raw,
-
-                -- Trade counts for method selection
-                countIf(block_time >= now() - INTERVAL 5 MINUTE) AS trades_5m,
-                countIf(block_time >= now() - INTERVAL 1 HOUR) AS trades_1h,
-                countIf(block_time >= now() - INTERVAL 24 HOUR) AS trades_24h,
-
-                -- Reference type from latest trade (for USD conversion)
-                argMax(ref_type, block_time) AS latest_ref_type,
+                -- ========== SOL PAIR VWAP (9 decimals) ==========
+                sumIf(ref_amount, block_time >= now() - INTERVAL 5 MINUTE AND ref_type = 'SOL')
+                    / greatest(sumIf(token_amount, block_time >= now() - INTERVAL 5 MINUTE AND ref_type = 'SOL'), 1)
+                    AS sol_vwap_5m_raw,
+                sumIf(ref_amount, block_time >= now() - INTERVAL 1 HOUR AND ref_type = 'SOL')
+                    / greatest(sumIf(token_amount, block_time >= now() - INTERVAL 1 HOUR AND ref_type = 'SOL'), 1)
+                    AS sol_vwap_1h_raw,
+                sumIf(ref_amount, block_time >= now() - INTERVAL 24 HOUR AND ref_type = 'SOL')
+                    / greatest(sumIf(token_amount, block_time >= now() - INTERVAL 24 HOUR AND ref_type = 'SOL'), 1)
+                    AS sol_vwap_24h_raw,
+                argMaxIf(ref_amount / token_amount, block_time, ref_type = 'SOL') AS sol_last_price_raw,
+                countIf(block_time >= now() - INTERVAL 5 MINUTE AND ref_type = 'SOL') AS sol_trades_5m,
+                countIf(block_time >= now() - INTERVAL 1 HOUR AND ref_type = 'SOL') AS sol_trades_1h,
+                countIf(block_time >= now() - INTERVAL 24 HOUR AND ref_type = 'SOL') AS sol_trades_24h,
 
                 -- First swap time
                 min(block_time) AS first_swap_time,
 
-                -- Best pool info (by latest ref balance)
-                argMax(source, ref_balance_raw) AS best_source,
-                argMax(base_coin, ref_balance_raw) AS best_base_coin,
-                argMax(quote_coin, ref_balance_raw) AS best_quote_coin,
-                argMax(base_pool_balance_after, ref_balance_raw) AS best_base_balance,
-                argMax(quote_pool_balance_after, ref_balance_raw) AS best_quote_balance,
+                -- Best pool info (by latest ref balance in USD terms)
+                argMax(source, CASE
+                    WHEN ref_type = 'SOL' THEN ref_balance_raw / 1e9 * {self.sol_price_usd}
+                    WHEN ref_type = 'STABLE' THEN ref_balance_raw / 1e6
+                    ELSE 0
+                END) AS best_source,
+                argMax(base_coin, CASE
+                    WHEN ref_type = 'SOL' THEN ref_balance_raw / 1e9 * {self.sol_price_usd}
+                    WHEN ref_type = 'STABLE' THEN ref_balance_raw / 1e6
+                    ELSE 0
+                END) AS best_base_coin,
+                argMax(quote_coin, CASE
+                    WHEN ref_type = 'SOL' THEN ref_balance_raw / 1e9 * {self.sol_price_usd}
+                    WHEN ref_type = 'STABLE' THEN ref_balance_raw / 1e6
+                    ELSE 0
+                END) AS best_quote_coin,
+                argMax(base_pool_balance_after, CASE
+                    WHEN ref_type = 'SOL' THEN ref_balance_raw / 1e9 * {self.sol_price_usd}
+                    WHEN ref_type = 'STABLE' THEN ref_balance_raw / 1e6
+                    ELSE 0
+                END) AS best_base_balance,
+                argMax(quote_pool_balance_after, CASE
+                    WHEN ref_type = 'SOL' THEN ref_balance_raw / 1e9 * {self.sol_price_usd}
+                    WHEN ref_type = 'STABLE' THEN ref_balance_raw / 1e6
+                    ELSE 0
+                END) AS best_quote_balance,
 
                 -- Liquidity from best pool
-                argMax(
+                max(
                     CASE
                         WHEN ref_type = 'SOL' THEN (ref_balance_raw / 1e9) * {self.sol_price_usd}
                         WHEN ref_type = 'STABLE' THEN (ref_balance_raw / 1e6)
                         ELSE 0
-                    END,
-                    block_time
+                    END
                 ) AS liquidity_usd
 
             FROM unified_swaps
@@ -261,7 +277,7 @@ class LiquidityAnalyzer:
             GROUP BY token
         )
 
-        -- 3. Final selection with cascading price method
+        -- 3. Final selection - prefer STABLE pairs (direct USD), fallback to SOL
         SELECT
             token,
             first_swap_time AS first_swap,
@@ -271,40 +287,55 @@ class LiquidityAnalyzer:
             best_base_balance AS latest_base_balance,
             best_quote_balance AS latest_quote_balance,
 
-            -- Cascading VWAP price selection (raw, needs USD conversion)
+            -- Cascading VWAP: First try STABLE, then SOL (each with cascading time windows)
             multiIf(
-                trades_5m >= 3, vwap_5m_raw,
-                trades_1h >= 5, vwap_1h_raw,
-                trades_24h >= 5, vwap_24h_raw,
-                last_price_filtered_raw > 0, last_price_filtered_raw,
-                last_price_any_raw
+                -- STABLE cascading
+                stable_trades_5m >= 3, stable_vwap_5m_raw,
+                stable_trades_1h >= 5, stable_vwap_1h_raw,
+                stable_trades_24h >= 5, stable_vwap_24h_raw,
+                stable_last_price_raw > 0, stable_last_price_raw,
+                -- SOL cascading (fallback)
+                sol_trades_5m >= 3, sol_vwap_5m_raw,
+                sol_trades_1h >= 5, sol_vwap_1h_raw,
+                sol_trades_24h >= 5, sol_vwap_24h_raw,
+                sol_last_price_raw > 0, sol_last_price_raw,
+                0
             ) AS price_raw,
 
-            -- Price method used (for debugging/monitoring)
+            -- Price method and reference type
             multiIf(
-                trades_5m >= 3, 'VWAP_5M',
-                trades_1h >= 5, 'VWAP_1H',
-                trades_24h >= 5, 'VWAP_24H',
-                last_price_filtered_raw > 0, 'LAST_FILTERED',
-                'LAST_ANY'
+                stable_trades_5m >= 3, 'STABLE_VWAP_5M',
+                stable_trades_1h >= 5, 'STABLE_VWAP_1H',
+                stable_trades_24h >= 5, 'STABLE_VWAP_24H',
+                stable_last_price_raw > 0, 'STABLE_LAST',
+                sol_trades_5m >= 3, 'SOL_VWAP_5M',
+                sol_trades_1h >= 5, 'SOL_VWAP_1H',
+                sol_trades_24h >= 5, 'SOL_VWAP_24H',
+                sol_last_price_raw > 0, 'SOL_LAST',
+                'NONE'
             ) AS price_method,
 
             -- Reference type for USD conversion
-            latest_ref_type AS price_reference_type,
+            multiIf(
+                stable_trades_5m >= 3 OR stable_trades_1h >= 5 OR stable_trades_24h >= 5 OR stable_last_price_raw > 0, 'STABLE',
+                sol_trades_5m >= 3 OR sol_trades_1h >= 5 OR sol_trades_24h >= 5 OR sol_last_price_raw > 0, 'SOL',
+                'NONE'
+            ) AS price_reference_type,
 
             -- Reference coin address
-            CASE
-                WHEN latest_ref_type = 'SOL' THEN '{SOL_ADDRESS}'
-                ELSE best_quote_coin
-            END AS latest_price_reference,
+            multiIf(
+                stable_trades_5m >= 3 OR stable_trades_1h >= 5 OR stable_trades_24h >= 5 OR stable_last_price_raw > 0, '{usdc}',
+                sol_trades_5m >= 3 OR sol_trades_1h >= 5 OR sol_trades_24h >= 5 OR sol_last_price_raw > 0, '{SOL_ADDRESS}',
+                ''
+            ) AS latest_price_reference,
 
             -- Liquidity
             liquidity_usd,
 
-            -- Trade counts for monitoring
-            trades_5m,
-            trades_1h,
-            trades_24h
+            -- Trade counts for monitoring (combined for logging)
+            stable_trades_5m + sol_trades_5m AS trades_5m,
+            stable_trades_1h + sol_trades_1h AS trades_1h,
+            stable_trades_24h + sol_trades_24h AS trades_24h
 
         FROM price_candidates
         WHERE price_raw > 0
