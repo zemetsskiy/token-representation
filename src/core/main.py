@@ -56,7 +56,7 @@ class TokenAggregationWorker:
 
         self.liquidity_analyzer = LiquidityAnalyzer(self.db_client)
         self.liquidity_analyzer.set_sol_price(self.sol_price_usd)
-        
+
         self.first_tx_finder = FirstTxFinder(self.db_client)
         self.decimals_resolver = DecimalsResolver()
         self.metadata_fetcher = MetadataFetcher()

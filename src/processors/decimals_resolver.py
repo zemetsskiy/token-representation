@@ -2,7 +2,9 @@ import logging
 from typing import Dict, List
 import requests
 from ..config import Config
+
 logger = logging.getLogger(__name__)
+
 
 class DecimalsResolver:
 
@@ -10,12 +12,18 @@ class DecimalsResolver:
         self.rpc_url = Config.SOLANA_HTTP_RPC_URL
         if not self.rpc_url:
             raise ValueError('SOLANA_HTTP_RPC_URL is not set in the environment.')
-        self.decimals_cache: Dict[str, int] = {'So11111111111111111111111111111111111111112': 9, 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v': 6, 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB': 6}
+        self.decimals_cache: Dict[str, int] = {
+            'So11111111111111111111111111111111111111112': 9,
+            'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v': 6,
+            'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB': 6
+        }
 
     def resolve_decimals_batch(self, token_addresses: List[str]) -> Dict[str, int]:
         if not token_addresses:
             return {}
+
         logger.info(f'Resolving decimals for {len(token_addresses)} tokens via RPC...')
+
         normalized: List[str] = []
         for addr in token_addresses:
             s = addr.decode('utf-8', errors='ignore') if isinstance(addr, (bytes, bytearray)) else str(addr)
