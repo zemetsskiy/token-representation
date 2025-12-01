@@ -118,7 +118,7 @@ class MetadataFetcher:
                     logger.debug(f'No metadata found for {mint[:8]}... at PDA {metadata_pda[:8]}...')
 
             if found_count > 0:
-                logger.info(f'Successfully fetched metadata for {found_count}/{len(metadata_accounts)} tokens in this batch')
+                logger.debug(f'Successfully fetched metadata for {found_count}/{len(metadata_accounts)} tokens in this batch')
 
         except requests.exceptions.RequestException as e:
             logger.error(f'RPC request failed for metadata batch: {e}')
