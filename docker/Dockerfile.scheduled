@@ -53,10 +53,21 @@ if [ -f /app/.env ]; then\n\
     export $(cat /app/.env | grep -v "^#" | xargs)\n\
 fi\n\
 \n\
-echo "Starting cron daemon..."\n\
+echo "============================================================"\n\
+echo "TOKEN REPRESENTATION WORKER - CRON SCHEDULER"\n\
+echo "============================================================"\n\
+echo "Started at: $(date -u +%Y-%m-%d\ %H:%M:%S) UTC"\n\
+echo ""\n\
+echo "Schedule:"\n\
+echo "  - sol_500_swaps_7_days   : every 10 minutes"\n\
+echo "  - sol_1000_swaps_3_days  : daily at 00:00 UTC"\n\
+echo "  - sol_100_swaps_30_days  : daily at 00:10 UTC"\n\
+echo ""\n\
+echo "Waiting for scheduled jobs..."\n\
+echo "============================================================"\n\
+\n\
 cron\n\
 \n\
-echo "Cron daemon started. Tailing logs..."\n\
 tail -f /var/log/cron.log /app/logs/*.log 2>/dev/null || tail -f /var/log/cron.log\n\
 ' > /app/entrypoint.sh && chmod +x /app/entrypoint.sh
 
