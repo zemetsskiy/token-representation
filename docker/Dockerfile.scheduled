@@ -48,11 +48,6 @@ ENV PYTHONPATH=/app:/app/src
 RUN echo '#!/bin/bash\n\
 set -e\n\
 \n\
-# Source environment variables\n\
-if [ -f /app/.env ]; then\n\
-    export $(cat /app/.env | grep -v "^#" | xargs)\n\
-fi\n\
-\n\
 echo "============================================================"\n\
 echo "TOKEN REPRESENTATION WORKER - CRON SCHEDULER"\n\
 echo "============================================================"\n\
@@ -65,6 +60,9 @@ echo "  - sol_100_swaps_30_days  : daily at 00:10 UTC"\n\
 echo ""\n\
 echo "Waiting for scheduled jobs..."\n\
 echo "============================================================"\n\
+\n\
+# Export all environment variables for cron\n\
+printenv > /etc/environment\n\
 \n\
 cron\n\
 \n\
