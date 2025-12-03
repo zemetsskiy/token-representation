@@ -33,10 +33,10 @@ RUN useradd -m -u 1000 appuser && \
 # Setup cron
 COPY docker/crontab /etc/cron.d/token-worker-cron
 
-# Set proper permissions for cron file
+# Set proper permissions for cron file and install for root
 RUN chmod 0644 /etc/cron.d/token-worker-cron && \
     chown root:root /etc/cron.d/token-worker-cron && \
-    crontab -u appuser /etc/cron.d/token-worker-cron
+    crontab /etc/cron.d/token-worker-cron
 
 # Create cron log file
 RUN touch /var/log/cron.log && \
