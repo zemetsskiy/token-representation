@@ -51,8 +51,44 @@ class PostgresClient:
 
             self.connection.autocommit = False
             self.cursor = self.connection.cursor(cursor_factory=psycopg2.extras.DictCursor)
+            self._ensure_table_exists()
         except Exception as e:
             logger.error(f'Failed to connect to PostgreSQL: {e}')
+            raise
+
+    def _ensure_table_exists(self):
+        """Create unverified_tokens table if it doesn't exist."""
+        create_table_sql = """
+        CREATE TABLE IF NOT EXISTS unverified_tokens (
+            id BIGSERIAL PRIMARY KEY,
+            contract_address VARCHAR(48) NOT NULL,
+            chain VARCHAR(50) NOT NULL,
+            decimals INTEGER,
+            symbol VARCHAR(20),
+            name VARCHAR(255),
+            price_usd DOUBLE PRECISION DEFAULT 0,
+            market_cap_usd DOUBLE PRECISION DEFAULT 0,
+            supply DOUBLE PRECISION DEFAULT 0,
+            largest_lp_pool_usd DOUBLE PRECISION DEFAULT 0,
+            first_tx_date TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            view_source VARCHAR(100),
+            CONSTRAINT unique_token_chain UNIQUE (contract_address, chain)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_unverified_contract_address ON unverified_tokens(contract_address);
+        CREATE INDEX IF NOT EXISTS idx_unverified_chain ON unverified_tokens(chain);
+        CREATE INDEX IF NOT EXISTS idx_unverified_updated_at ON unverified_tokens(updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_unverified_contract_chain ON unverified_tokens(contract_address, chain);
+        """
+        try:
+            self.cursor.execute(create_table_sql)
+            self.connection.commit()
+            logger.info("Ensured unverified_tokens table exists")
+        except Exception as e:
+            logger.error(f"Failed to create unverified_tokens table: {e}")
+            self.connection.rollback()
             raise
 
     def _reconnect(self):
@@ -141,6 +177,11 @@ class PostgresClient:
 
         except Exception as e:
             logger.warning(f'Failed to fetch known decimals: {e}')
+            # Rollback to recover from error state
+            try:
+                self.connection.rollback()
+            except Exception:
+                pass
             return {}
 
     def insert_token_metrics_batch(

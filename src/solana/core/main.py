@@ -3,8 +3,8 @@ import math
 import time
 from typing import Dict
 import polars as pl
-from ..config import Config, setup_logging
-from ..database import get_db_client, ClickHouseClient
+from ...config import Config, setup_logging
+from ...database import get_db_client, ClickHouseClient
 from ..processors import (
     TokenDiscovery,
     SupplyCalculator,
@@ -41,7 +41,7 @@ class TokenAggregationWorker:
         self.db_client = get_db_client()
         
         # Initialize Redis Client (REQUIRED for live SOL price)
-        from ..database.redis_client import RedisClient
+        from ...database.redis_client import RedisClient
         self.redis_client = RedisClient()
 
         # Get SOL Price from Redis (REQUIRED - no fallback)

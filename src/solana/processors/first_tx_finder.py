@@ -1,8 +1,8 @@
 import logging
 from typing import List, Dict
 import polars as pl
-from ..database import ClickHouseClient
-from ..config import Config
+from ...database import ClickHouseClient
+from ...config import Config
 logger = logging.getLogger(__name__)
 
 class FirstTxFinder:

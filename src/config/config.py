@@ -3,13 +3,31 @@ from dotenv import load_dotenv
 load_dotenv()
 
 class Config:
-    # ClickHouse Configuration (Data Source)
-    CLICKHOUSE_HOST = os.getenv('CLICKHOUSE_HOST', 'localhost')
-    CLICKHOUSE_PORT = int(os.getenv('CLICKHOUSE_PORT', '8123'))
-    CLICKHOUSE_USER = os.getenv('CLICKHOUSE_USER', 'default')
-    CLICKHOUSE_PASSWORD = os.getenv('CLICKHOUSE_PASSWORD', '')
-    CLICKHOUSE_DATABASE = os.getenv('CLICKHOUSE_DATABASE', 'solana')
-    CLICKHOUSE_TEMP_DATABASE = os.getenv('CLICKHOUSE_TEMP_DATABASE', 'temp_processing')
+    # ClickHouse Configuration - Solana (Data Source)
+    # Falls back to generic CLICKHOUSE_* if SOLANA_CLICKHOUSE_* not set
+    SOLANA_CLICKHOUSE_HOST = os.getenv('SOLANA_CLICKHOUSE_HOST', os.getenv('CLICKHOUSE_HOST', 'localhost'))
+    SOLANA_CLICKHOUSE_PORT = int(os.getenv('SOLANA_CLICKHOUSE_PORT', os.getenv('CLICKHOUSE_PORT', '8123')))
+    SOLANA_CLICKHOUSE_USER = os.getenv('SOLANA_CLICKHOUSE_USER', os.getenv('CLICKHOUSE_USER', 'default'))
+    SOLANA_CLICKHOUSE_PASSWORD = os.getenv('SOLANA_CLICKHOUSE_PASSWORD', os.getenv('CLICKHOUSE_PASSWORD', ''))
+    SOLANA_CLICKHOUSE_DATABASE = os.getenv('SOLANA_CLICKHOUSE_DATABASE', os.getenv('CLICKHOUSE_DATABASE', 'solana'))
+    SOLANA_CLICKHOUSE_TEMP_DATABASE = os.getenv('SOLANA_CLICKHOUSE_TEMP_DATABASE', os.getenv('CLICKHOUSE_TEMP_DATABASE', 'temp_processing'))
+
+    # ClickHouse Configuration - EVM (Data Source)
+    # Falls back to generic CLICKHOUSE_* if EVM_CLICKHOUSE_* not set
+    EVM_CLICKHOUSE_HOST = os.getenv('EVM_CLICKHOUSE_HOST', os.getenv('CLICKHOUSE_HOST', 'localhost'))
+    EVM_CLICKHOUSE_PORT = int(os.getenv('EVM_CLICKHOUSE_PORT', os.getenv('CLICKHOUSE_PORT', '8123')))
+    EVM_CLICKHOUSE_USER = os.getenv('EVM_CLICKHOUSE_USER', os.getenv('CLICKHOUSE_USER', 'default'))
+    EVM_CLICKHOUSE_PASSWORD = os.getenv('EVM_CLICKHOUSE_PASSWORD', os.getenv('CLICKHOUSE_PASSWORD', ''))
+    EVM_CLICKHOUSE_DATABASE = os.getenv('EVM_CLICKHOUSE_DATABASE', os.getenv('CLICKHOUSE_DATABASE', 'evm'))
+    EVM_CLICKHOUSE_TEMP_DATABASE = os.getenv('EVM_CLICKHOUSE_TEMP_DATABASE', os.getenv('CLICKHOUSE_TEMP_DATABASE', 'temp_processing'))
+
+    # Legacy/backwards compatibility aliases (used by shared code)
+    CLICKHOUSE_HOST = SOLANA_CLICKHOUSE_HOST
+    CLICKHOUSE_PORT = SOLANA_CLICKHOUSE_PORT
+    CLICKHOUSE_USER = SOLANA_CLICKHOUSE_USER
+    CLICKHOUSE_PASSWORD = SOLANA_CLICKHOUSE_PASSWORD
+    CLICKHOUSE_DATABASE = SOLANA_CLICKHOUSE_DATABASE
+    CLICKHOUSE_TEMP_DATABASE = SOLANA_CLICKHOUSE_TEMP_DATABASE
 
     # PostgreSQL Configuration (Storage)
     # Use connection string if provided, otherwise fall back to individual parameters
@@ -34,7 +52,22 @@ class Config:
     REDIS_PORT = int(os.getenv('REDIS_PORT', '6379'))
     REDIS_DB = int(os.getenv('REDIS_DB', '2'))  # Default to DB 2 as per user request
     REDIS_PASSWORD = os.getenv('REDIS_PASSWORD', None)
+
+    # Native token price keys in Redis
+    # Keys must match exactly what's stored in Redis
     SOL_PRICE_KEY = os.getenv('SOL_PRICE_KEY', 'solana:price_usd')
+    ETH_PRICE_KEY = os.getenv('ETH_PRICE_KEY', 'ethereum:price_usd')
+    BNB_PRICE_KEY = os.getenv('BNB_PRICE_KEY', 'bnb:price_usd')
+    MATIC_PRICE_KEY = os.getenv('MATIC_PRICE_KEY', 'matic:price_usd')
+
+    # Chain to native price key mapping
+    NATIVE_PRICE_KEYS = {
+        'solana': SOL_PRICE_KEY,
+        'eth': ETH_PRICE_KEY,
+        'base': ETH_PRICE_KEY,  # Base uses ETH as native
+        'bsc': BNB_PRICE_KEY,
+        'polygon': MATIC_PRICE_KEY,
+    }
 
     # Constants
     STABLECOINS = {'USDC': 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', 'USDT': 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB'}

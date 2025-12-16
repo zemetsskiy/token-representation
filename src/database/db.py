@@ -8,18 +8,47 @@ logger = logging.getLogger(__name__)
 
 class ClickHouseClient:
 
-    def __init__(self):
+    def __init__(self, pipeline: str = 'solana'):
+        """
+        Initialize ClickHouse client for a specific pipeline.
+
+        Args:
+            pipeline: 'solana' or 'evm' - determines which ClickHouse config to use
+        """
         self.client = None
-        self.temp_database = Config.CLICKHOUSE_TEMP_DATABASE
+        self.pipeline = pipeline.lower()
+
+        # Load config based on pipeline
+        if self.pipeline == 'evm':
+            self.host = Config.EVM_CLICKHOUSE_HOST
+            self.port = Config.EVM_CLICKHOUSE_PORT
+            self.user = Config.EVM_CLICKHOUSE_USER
+            self.password = Config.EVM_CLICKHOUSE_PASSWORD
+            self.database = Config.EVM_CLICKHOUSE_DATABASE
+            self.temp_database = Config.EVM_CLICKHOUSE_TEMP_DATABASE
+        else:  # default to solana
+            self.host = Config.SOLANA_CLICKHOUSE_HOST
+            self.port = Config.SOLANA_CLICKHOUSE_PORT
+            self.user = Config.SOLANA_CLICKHOUSE_USER
+            self.password = Config.SOLANA_CLICKHOUSE_PASSWORD
+            self.database = Config.SOLANA_CLICKHOUSE_DATABASE
+            self.temp_database = Config.SOLANA_CLICKHOUSE_TEMP_DATABASE
+
         self._connect()
         self._ensure_temp_database()
 
     def _connect(self):
         try:
-            self.client = clickhouse_connect.get_client(host=Config.CLICKHOUSE_HOST, port=Config.CLICKHOUSE_PORT, username=Config.CLICKHOUSE_USER, password=Config.CLICKHOUSE_PASSWORD, database=Config.CLICKHOUSE_DATABASE)
-            logger.info(f'Connected to ClickHouse at {Config.CLICKHOUSE_HOST}:{Config.CLICKHOUSE_PORT}')
+            self.client = clickhouse_connect.get_client(
+                host=self.host,
+                port=self.port,
+                username=self.user,
+                password=self.password,
+                database=self.database
+            )
+            logger.info(f'[{self.pipeline.upper()}] Connected to ClickHouse at {self.host}:{self.port}/{self.database}')
         except Exception as e:
-            logger.error(f'Failed to connect to ClickHouse: {e}')
+            logger.error(f'[{self.pipeline.upper()}] Failed to connect to ClickHouse: {e}')
             raise
 
     def _ensure_temp_database(self):
@@ -195,11 +224,41 @@ class ClickHouseClient:
     def close(self):
         if self.client:
             self.client.close()
-            logger.info('ClickHouse connection closed')
-_db_client = None
+            logger.info(f'[{self.pipeline.upper()}] ClickHouse connection closed')
 
-def get_db_client() -> ClickHouseClient:
-    global _db_client
-    if _db_client is None:
-        _db_client = ClickHouseClient()
-    return _db_client
+
+# Singleton instances for each pipeline
+_solana_db_client = None
+_evm_db_client = None
+
+
+def get_db_client(pipeline: str = 'solana') -> ClickHouseClient:
+    """
+    Get or create ClickHouse client singleton for a specific pipeline.
+
+    Args:
+        pipeline: 'solana' or 'evm'
+
+    Returns:
+        ClickHouseClient instance for the specified pipeline
+    """
+    global _solana_db_client, _evm_db_client
+
+    if pipeline.lower() == 'evm':
+        if _evm_db_client is None:
+            _evm_db_client = ClickHouseClient(pipeline='evm')
+        return _evm_db_client
+    else:
+        if _solana_db_client is None:
+            _solana_db_client = ClickHouseClient(pipeline='solana')
+        return _solana_db_client
+
+
+def get_solana_db_client() -> ClickHouseClient:
+    """Get Solana ClickHouse client (convenience function)."""
+    return get_db_client(pipeline='solana')
+
+
+def get_evm_db_client() -> ClickHouseClient:
+    """Get EVM ClickHouse client (convenience function)."""
+    return get_db_client(pipeline='evm')

@@ -10,6 +10,7 @@ services:
       - ../src:/app/src:ro
       - ../logs:/app/logs
       - ../worker_scheduled.py:/app/worker_scheduled.py:ro
+      - ../evm_worker_scheduled.py:/app/evm_worker_scheduled.py:ro
     networks:
       - token-network
     deploy:

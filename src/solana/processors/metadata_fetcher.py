@@ -5,7 +5,7 @@ import struct
 import base64
 from typing import Dict, List, Optional, Tuple
 import requests
-from ..config import Config
+from ...config import Config
 
 logger = logging.getLogger(__name__)
 

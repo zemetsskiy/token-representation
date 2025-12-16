@@ -1,6 +1,6 @@
 import logging
 from typing import List, Dict
-from ..database import ClickHouseClient
+from ...database import ClickHouseClient
 logger = logging.getLogger(__name__)
 
 class TokenDiscovery:

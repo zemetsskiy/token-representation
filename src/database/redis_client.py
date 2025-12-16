@@ -11,7 +11,7 @@ class RedisConnectionError(Exception):
 
 
 class RedisPriceNotFoundError(Exception):
-    """Raised when SOL price is not available in Redis."""
+    """Raised when native token price is not available in Redis."""
     pass
 
 
@@ -88,3 +88,51 @@ class RedisClient:
         except Exception as e:
             logger.error(f"❌ Error fetching SOL price from Redis: {e}")
             raise RedisPriceNotFoundError(f"Error fetching SOL price: {e}")
+
+    def get_native_price(self, chain: str) -> float:
+        """
+        Fetch live native token price for a given chain from Redis.
+
+        Args:
+            chain: Chain identifier (eth, base, bsc, polygon, solana)
+
+        Returns:
+            float: Current native token price in USD
+
+        Raises:
+            RedisPriceNotFoundError: If price key is not found in Redis
+        """
+        if not self.enabled or not self.client:
+            raise RedisPriceNotFoundError("Redis client is not connected")
+
+        # Get the price key for this chain
+        price_key = Config.NATIVE_PRICE_KEYS.get(chain.lower())
+        if not price_key:
+            raise RedisPriceNotFoundError(f"No native price key configured for chain '{chain}'")
+
+        try:
+            price_str = self.client.get(price_key)
+            if price_str:
+                price = float(price_str)
+                logger.info(f"Got live native price for {chain} from Redis ({price_key}): ${price:.2f}")
+                return price
+            else:
+                logger.warning(f"Key '{price_key}' not found in Redis for chain {chain}")
+                raise RedisPriceNotFoundError(f"Key '{price_key}' not found in Redis")
+        except RedisPriceNotFoundError:
+            raise
+        except Exception as e:
+            logger.error(f"Error fetching native price for {chain} from Redis: {e}")
+            raise RedisPriceNotFoundError(f"Error fetching native price for {chain}: {e}")
+
+
+# Singleton instance
+_redis_client = None
+
+
+def get_redis_client() -> RedisClient:
+    """Get or create Redis client singleton."""
+    global _redis_client
+    if _redis_client is None:
+        _redis_client = RedisClient()
+    return _redis_client
