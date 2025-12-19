@@ -35,3 +35,4 @@ class EvmRpcEnricher:
                 "total_supply_raw": self._supply_cache.get(t),
             })
         return out
+

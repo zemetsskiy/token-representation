@@ -183,5 +183,3 @@ class EvmRpcClient:
                     supply.update(res)  # type: ignore[arg-type]
 
         return meta, supply
-
-
