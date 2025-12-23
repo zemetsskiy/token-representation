@@ -54,9 +54,12 @@ logs/
 .env.local
 .env.*.local
 
-# Docker (exclude all except crontab)
+# Docker (exclude all except crontab files and Dockerfile.scheduled)
 docker/
 !docker/crontab
+!docker/crontab.solana
+!docker/crontab.evm
+!docker/Dockerfile.scheduled
 Dockerfile
 docker-compose*.yml
 
