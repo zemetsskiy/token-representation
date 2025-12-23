@@ -2,13 +2,15 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+ARG PIPELINE=both
+
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    DEBIAN_FRONTEND=noninteractive
+    DEBIAN_FRONTEND=noninteractive \
+    PIPELINE=${PIPELINE}
 
-# Install system dependencies including cron
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     gcc \
@@ -16,57 +18,68 @@ RUN apt-get update && \
     cron \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements and install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
 COPY . .
 
-# Create logs directory
 RUN mkdir -p /app/logs
 
-# Create appuser and set permissions
 RUN useradd -m -u 1000 appuser && \
     chown -R appuser:appuser /app
 
-# Setup cron
-COPY docker/crontab /etc/cron.d/token-worker-cron
+COPY docker/crontab /etc/cron.d/crontab-both
+COPY docker/crontab.solana /etc/cron.d/crontab-solana
+COPY docker/crontab.evm /etc/cron.d/crontab-evm
 
-# Set proper permissions for cron file and install for root
-RUN chmod 0644 /etc/cron.d/token-worker-cron && \
-    chown root:root /etc/cron.d/token-worker-cron && \
-    crontab /etc/cron.d/token-worker-cron
+RUN chmod 0644 /etc/cron.d/crontab-* && \
+    chown root:root /etc/cron.d/crontab-*
 
-# Create cron log file
 RUN touch /var/log/cron.log && \
     chown appuser:appuser /var/log/cron.log
 
 ENV PYTHONPATH=/app:/app/src
 
-# Create entrypoint script
 RUN echo '#!/bin/bash\n\
 set -e\n\
 \n\
+PIPELINE=${PIPELINE:-both}\n\
+\n\
 echo "============================================================"\n\
-echo "TOKEN REPRESENTATION WORKER - CRON SCHEDULER"\n\
+echo "TOKEN REPRESENTATION WORKER - ${PIPELINE^^} PIPELINE"\n\
 echo "============================================================"\n\
 echo "Started at: $(date -u +%Y-%m-%d\ %H:%M:%S) UTC"\n\
 echo ""\n\
-echo "SOLANA Schedule:"\n\
-echo "  - sol_500_swaps_7_days   : every 10 min (:00, :10, :20, :30, :40, :50)"\n\
-echo "  - sol_1000_swaps_3_days  : daily at 00:00 UTC"\n\
-echo "  - sol_100_swaps_30_days  : daily at 00:10 UTC"\n\
-echo ""\n\
-echo "EVM Schedule (all chains: eth, base, bsc, polygon):"\n\
-echo "  - evm_1000_swaps_3_days  : every 10 min (:05, :15, :25, :35, :45, :55)"\n\
-echo "  - evm_500_swaps_7_days   : daily at 00:20 UTC"\n\
-echo "  - evm_100_swaps_30_days  : daily at 00:40 UTC"\n\
+\n\
+if [ "$PIPELINE" = "solana" ]; then\n\
+    echo "SOLANA Schedule:"\n\
+    echo "  - sol_500_swaps_7_days   : every 10 min"\n\
+    echo "  - sol_1000_swaps_3_days  : daily at 00:00 UTC"\n\
+    echo "  - sol_100_swaps_30_days  : daily at 00:10 UTC"\n\
+    crontab /etc/cron.d/crontab-solana\n\
+elif [ "$PIPELINE" = "evm" ]; then\n\
+    echo "EVM Schedule (all chains: eth, base, bsc, polygon):"\n\
+    echo "  - evm_1000_swaps_3_days  : every 10 min (at :05, :15, ...)"\n\
+    echo "  - evm_500_swaps_7_days   : daily at 00:20 UTC"\n\
+    echo "  - evm_100_swaps_30_days  : daily at 00:40 UTC"\n\
+    crontab /etc/cron.d/crontab-evm\n\
+else\n\
+    echo "SOLANA Schedule:"\n\
+    echo "  - sol_500_swaps_7_days   : every 10 min"\n\
+    echo "  - sol_1000_swaps_3_days  : daily at 00:00 UTC"\n\
+    echo "  - sol_100_swaps_30_days  : daily at 00:10 UTC"\n\
+    echo ""\n\
+    echo "EVM Schedule (all chains: eth, base, bsc, polygon):"\n\
+    echo "  - evm_1000_swaps_3_days  : every 10 min (at :05, :15, ...)"\n\
+    echo "  - evm_500_swaps_7_days   : daily at 00:20 UTC"\n\
+    echo "  - evm_100_swaps_30_days  : daily at 00:40 UTC"\n\
+    crontab /etc/cron.d/crontab-both\n\
+fi\n\
+\n\
 echo ""\n\
 echo "Waiting for scheduled jobs..."\n\
 echo "============================================================"\n\
 \n\
-# Export all environment variables for cron\n\
 printenv > /etc/environment\n\
 \n\
 cron\n\

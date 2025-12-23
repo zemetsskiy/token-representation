@@ -1,0 +1,42 @@
+services:
+  evm-worker:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.scheduled
+      args:
+        PIPELINE: evm
+    container_name: evm-token-worker
+    env_file:
+      - ../.env
+    environment:
+      - PIPELINE=evm
+    volumes:
+      - ../src:/app/src:ro
+      - ../logs:/app/logs
+      - ../evm_worker_scheduled.py:/app/evm_worker_scheduled.py:ro
+    networks:
+      - token-network
+    deploy:
+      resources:
+        limits:
+          cpus: '4'
+          memory: 16G
+        reservations:
+          cpus: '1'
+          memory: 8G
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "pgrep", "-f", "cron"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+networks:
+  token-network:
+    driver: bridge

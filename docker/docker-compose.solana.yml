@@ -1,0 +1,42 @@
+services:
+  solana-worker:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.scheduled
+      args:
+        PIPELINE: solana
+    container_name: solana-token-worker
+    env_file:
+      - ../.env
+    environment:
+      - PIPELINE=solana
+    volumes:
+      - ../src:/app/src:ro
+      - ../logs:/app/logs
+      - ../worker_scheduled.py:/app/worker_scheduled.py:ro
+    networks:
+      - token-network
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 8G
+        reservations:
+          cpus: '0.5'
+          memory: 4G
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "pgrep", "-f", "cron"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+networks:
+  token-network:
+    driver: bridge
