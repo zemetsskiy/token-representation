@@ -18,7 +18,7 @@ sys.path.insert(0, str(src_path))
 
 from src.config import Config, setup_logging
 from src.database import get_db_client, get_postgres_client
-from src.solana.core.main import TokenAggregationWorker
+from src.solana.core import TokenAggregationWorker
 
 setup_logging()
 logger = logging.getLogger(__name__)
