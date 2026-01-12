@@ -57,12 +57,16 @@ if [ "$PIPELINE" = "solana" ]; then\n\
     echo "  - sol_1000_swaps_3_days  : daily at 00:00 UTC"\n\
     echo "  - sol_100_swaps_30_days  : daily at 00:10 UTC"\n\
     crontab /etc/cron.d/crontab-solana\n\
+    touch /app/logs/solana-500-swaps-7d.log /app/logs/solana-1000-swaps-3d.log /app/logs/solana-100-swaps-30d.log\n\
+    LOG_FILES="/var/log/cron.log /app/logs/solana-500-swaps-7d.log /app/logs/solana-1000-swaps-3d.log /app/logs/solana-100-swaps-30d.log"\n\
 elif [ "$PIPELINE" = "evm" ]; then\n\
     echo "EVM Schedule (all chains: eth, base, bsc, polygon):"\n\
     echo "  - evm_1000_swaps_3_days  : every 10 min (at :05, :15, ...)"\n\
     echo "  - evm_500_swaps_7_days   : daily at 00:20 UTC"\n\
     echo "  - evm_100_swaps_30_days  : daily at 00:40 UTC"\n\
     crontab /etc/cron.d/crontab-evm\n\
+    touch /app/logs/evm-1000-swaps-3d.log /app/logs/evm-500-swaps-7d.log /app/logs/evm-100-swaps-30d.log\n\
+    LOG_FILES="/var/log/cron.log /app/logs/evm-1000-swaps-3d.log /app/logs/evm-500-swaps-7d.log /app/logs/evm-100-swaps-30d.log"\n\
 else\n\
     echo "SOLANA Schedule:"\n\
     echo "  - sol_500_swaps_7_days   : every 10 min"\n\
@@ -74,6 +78,9 @@ else\n\
     echo "  - evm_500_swaps_7_days   : daily at 00:20 UTC"\n\
     echo "  - evm_100_swaps_30_days  : daily at 00:40 UTC"\n\
     crontab /etc/cron.d/crontab-both\n\
+    touch /app/logs/solana-500-swaps-7d.log /app/logs/solana-1000-swaps-3d.log /app/logs/solana-100-swaps-30d.log\n\
+    touch /app/logs/evm-1000-swaps-3d.log /app/logs/evm-500-swaps-7d.log /app/logs/evm-100-swaps-30d.log\n\
+    LOG_FILES="/var/log/cron.log /app/logs/*.log"\n\
 fi\n\
 \n\
 echo ""\n\
@@ -84,7 +91,7 @@ printenv > /etc/environment\n\
 \n\
 cron\n\
 \n\
-tail -f /var/log/cron.log /app/logs/*.log 2>/dev/null || tail -f /var/log/cron.log\n\
+tail -F ${LOG_FILES}\n\
 ' > /app/entrypoint.sh && chmod +x /app/entrypoint.sh
 
 USER root
