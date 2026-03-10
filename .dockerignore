@@ -60,6 +60,7 @@ docker/
 !docker/crontab.solana
 !docker/crontab.evm
 !docker/Dockerfile.scheduled
+!docker/entrypoint.sh
 Dockerfile
 docker-compose*.yml
 
