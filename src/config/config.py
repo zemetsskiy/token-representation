@@ -5,7 +5,9 @@ load_dotenv()
 class Config:
     # ClickHouse Configuration - Solana (Data Source)
     # Falls back to generic CLICKHOUSE_* if SOLANA_CLICKHOUSE_* not set
+    # Supports multiple hosts for failover: SOLANA_CLICKHOUSE_HOSTS=host1,host2
     SOLANA_CLICKHOUSE_HOST = os.getenv('SOLANA_CLICKHOUSE_HOST', os.getenv('CLICKHOUSE_HOST', 'localhost'))
+    SOLANA_CLICKHOUSE_HOSTS = [h.strip() for h in os.getenv('SOLANA_CLICKHOUSE_HOSTS', SOLANA_CLICKHOUSE_HOST).split(',') if h.strip()]
     SOLANA_CLICKHOUSE_PORT = int(os.getenv('SOLANA_CLICKHOUSE_PORT', os.getenv('CLICKHOUSE_PORT', '8123')))
     SOLANA_CLICKHOUSE_USER = os.getenv('SOLANA_CLICKHOUSE_USER', os.getenv('CLICKHOUSE_USER', 'default'))
     SOLANA_CLICKHOUSE_PASSWORD = os.getenv('SOLANA_CLICKHOUSE_PASSWORD', os.getenv('CLICKHOUSE_PASSWORD', ''))
@@ -14,7 +16,9 @@ class Config:
 
     # ClickHouse Configuration - EVM (Data Source)
     # Falls back to generic CLICKHOUSE_* if EVM_CLICKHOUSE_* not set
+    # Supports multiple hosts for failover: EVM_CLICKHOUSE_HOSTS=host1,host2
     EVM_CLICKHOUSE_HOST = os.getenv('EVM_CLICKHOUSE_HOST', os.getenv('CLICKHOUSE_HOST', 'localhost'))
+    EVM_CLICKHOUSE_HOSTS = [h.strip() for h in os.getenv('EVM_CLICKHOUSE_HOSTS', EVM_CLICKHOUSE_HOST).split(',') if h.strip()]
     EVM_CLICKHOUSE_PORT = int(os.getenv('EVM_CLICKHOUSE_PORT', os.getenv('CLICKHOUSE_PORT', '8123')))
     EVM_CLICKHOUSE_USER = os.getenv('EVM_CLICKHOUSE_USER', os.getenv('CLICKHOUSE_USER', 'default'))
     EVM_CLICKHOUSE_PASSWORD = os.getenv('EVM_CLICKHOUSE_PASSWORD', os.getenv('CLICKHOUSE_PASSWORD', ''))

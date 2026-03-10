@@ -11,6 +11,7 @@ class ClickHouseClient:
     def __init__(self, pipeline: str = 'solana'):
         """
         Initialize ClickHouse client for a specific pipeline.
+        Supports multiple hosts for failover (tries each in order).
 
         Args:
             pipeline: 'solana' or 'evm' - determines which ClickHouse config to use
@@ -20,36 +21,67 @@ class ClickHouseClient:
 
         # Load config based on pipeline
         if self.pipeline == 'evm':
-            self.host = Config.EVM_CLICKHOUSE_HOST
+            self.hosts = list(Config.EVM_CLICKHOUSE_HOSTS)
             self.port = Config.EVM_CLICKHOUSE_PORT
             self.user = Config.EVM_CLICKHOUSE_USER
             self.password = Config.EVM_CLICKHOUSE_PASSWORD
             self.database = Config.EVM_CLICKHOUSE_DATABASE
             self.temp_database = Config.EVM_CLICKHOUSE_TEMP_DATABASE
         else:  # default to solana
-            self.host = Config.SOLANA_CLICKHOUSE_HOST
+            self.hosts = list(Config.SOLANA_CLICKHOUSE_HOSTS)
             self.port = Config.SOLANA_CLICKHOUSE_PORT
             self.user = Config.SOLANA_CLICKHOUSE_USER
             self.password = Config.SOLANA_CLICKHOUSE_PASSWORD
             self.database = Config.SOLANA_CLICKHOUSE_DATABASE
             self.temp_database = Config.SOLANA_CLICKHOUSE_TEMP_DATABASE
 
-        self._connect()
+        self.host = self.hosts[0]  # current active host
+        if len(self.hosts) > 1:
+            logger.info(f'[{self.pipeline.upper()}] Configured hosts (failover): {self.hosts}')
+        self._connect_with_failover()
         self._ensure_temp_database()
 
-    def _connect(self):
+    def _connect_with_failover(self):
+        """Try connecting to each host in order until one succeeds."""
+        last_error = None
+        for candidate in self.hosts:
+            try:
+                self._connect(host=candidate)
+                return
+            except Exception as e:
+                last_error = e
+                logger.warning(f'[{self.pipeline.upper()}] Host {candidate} unavailable, trying next...')
+        raise last_error
+
+    def _connect(self, host: str = None):
+        """Connect to a specific host, or to self.host if not specified."""
+        target = host or self.host
         try:
             self.client = clickhouse_connect.get_client(
-                host=self.host,
+                host=target,
                 port=self.port,
                 username=self.user,
                 password=self.password,
                 database=self.database
             )
-            logger.info(f'[{self.pipeline.upper()}] Connected to ClickHouse at {self.host}:{self.port}/{self.database}')
+            self.host = target
+            logger.info(f'[{self.pipeline.upper()}] Connected to ClickHouse at {target}:{self.port}/{self.database}')
         except Exception as e:
-            logger.error(f'[{self.pipeline.upper()}] Failed to connect to ClickHouse: {e}')
+            logger.error(f'[{self.pipeline.upper()}] Failed to connect to ClickHouse at {target}: {e}')
             raise
+
+    def _failover_connect(self):
+        """Try connecting to alternate hosts when current host fails."""
+        for candidate in self.hosts:
+            if candidate == self.host:
+                continue
+            try:
+                logger.warning(f'[{self.pipeline.upper()}] Attempting failover to {candidate}...')
+                self._connect(host=candidate)
+                return True
+            except Exception as e:
+                logger.error(f'[{self.pipeline.upper()}] Failover to {candidate} also failed: {e}')
+        return False
 
     def _ensure_temp_database(self):
         """
@@ -108,8 +140,11 @@ class ClickHouseClient:
                     logger.warning('Session locked, reconnecting and retrying query...')
                     self._connect()
                     continue
+                # Try failover to another host before giving up
+                if attempt < attempts - 1 and len(self.hosts) > 1 and self._failover_connect():
+                    logger.warning(f'Retrying query on failover host {self.host}...')
+                    continue
                 logger.error(f'Query execution failed: {e}', exc_info=True)
-                # Log only query summary to avoid massive logs with token lists
                 query_summary = ' '.join((query or '').strip().split()[:10])
                 logger.error(f'Query summary: {query_summary}...')
                 raise
@@ -145,8 +180,11 @@ class ClickHouseClient:
                     logger.warning('Session locked, reconnecting and retrying query (dict)...')
                     self._connect()
                     continue
+                # Try failover to another host before giving up
+                if attempt < attempts - 1 and len(self.hosts) > 1 and self._failover_connect():
+                    logger.warning(f'Retrying query (dict) on failover host {self.host}...')
+                    continue
                 logger.error(f'Query execution failed: {e}', exc_info=True)
-                # Log only query summary to avoid massive logs with token lists
                 query_summary = ' '.join((query or '').strip().split()[:10])
                 logger.error(f'Query summary: {query_summary}...')
                 raise
