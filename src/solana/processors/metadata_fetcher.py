@@ -1,4 +1,5 @@
 import logging
+import time
 import base58
 import hashlib
 import struct
@@ -10,6 +11,12 @@ from ...config import Config
 logger = logging.getLogger(__name__)
 
 METAPLEX_PROGRAM_ID = "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s"
+
+RPC_BATCH_SIZE = 50
+RPC_TIMEOUT = 60
+RPC_RETRY_ATTEMPTS = 3
+RPC_RETRY_BACKOFF = 2
+RPC_BATCH_DELAY = 0.1
 
 
 class MetadataFetcher:
@@ -41,10 +48,15 @@ class MetadataFetcher:
             if s and s not in self.metadata_cache:
                 normalized.append(s)
 
-        batch_size = 100
-        for i in range(0, len(normalized), batch_size):
-            batch = normalized[i:i + batch_size]
+        total_batches = (len(normalized) + RPC_BATCH_SIZE - 1) // RPC_BATCH_SIZE
+        for i in range(0, len(normalized), RPC_BATCH_SIZE):
+            batch = normalized[i:i + RPC_BATCH_SIZE]
+            batch_num = i // RPC_BATCH_SIZE + 1
+            if batch_num % 50 == 0:
+                logger.info(f'Metadata progress: batch {batch_num}/{total_batches}')
             self._fetch_metadata_batch(batch)
+            if RPC_BATCH_DELAY > 0 and i + RPC_BATCH_SIZE < len(normalized):
+                time.sleep(RPC_BATCH_DELAY)
 
         result = {}
         metadata_found = 0
@@ -92,42 +104,49 @@ class MetadataFetcher:
             for idx, (mint, metadata_pda) in enumerate(metadata_accounts)
         ]
 
-        try:
-            resp = requests.post(self.rpc_url, json=payload, timeout=60)
-            resp.raise_for_status()
-            results = resp.json()
+        for attempt in range(RPC_RETRY_ATTEMPTS):
+            try:
+                resp = requests.post(self.rpc_url, json=payload, timeout=RPC_TIMEOUT)
+                resp.raise_for_status()
+                results = resp.json()
 
-            # Handle single response wrapped in dict
-            if isinstance(results, dict) and 'result' in results:
-                results = [results]
+                # Handle single response wrapped in dict
+                if isinstance(results, dict) and 'result' in results:
+                    results = [results]
 
-            found_count = 0
-            for idx, item in enumerate(results):
-                if idx >= len(metadata_accounts):
-                    logger.warning(f'Response index {idx} out of range')
-                    continue
+                found_count = 0
+                for idx, item in enumerate(results):
+                    if idx >= len(metadata_accounts):
+                        logger.warning(f'Response index {idx} out of range')
+                        continue
 
-                mint, metadata_pda = metadata_accounts[idx]
-                metadata = self._parse_metadata_account(item)
-                self.metadata_cache[mint] = metadata
+                    mint, metadata_pda = metadata_accounts[idx]
+                    metadata = self._parse_metadata_account(item)
+                    self.metadata_cache[mint] = metadata
 
-                if metadata and metadata[0]:  # Has symbol
-                    found_count += 1
-                    logger.debug(f'Found metadata for {mint[:8]}...: symbol={metadata[0]}, name={metadata[1]}')
+                    if metadata and metadata[0]:  # Has symbol
+                        found_count += 1
+                        logger.debug(f'Found metadata for {mint[:8]}...: symbol={metadata[0]}, name={metadata[1]}')
+                    else:
+                        logger.debug(f'No metadata found for {mint[:8]}... at PDA {metadata_pda[:8]}...')
+
+                if found_count > 0:
+                    logger.debug(f'Successfully fetched metadata for {found_count}/{len(metadata_accounts)} tokens in this batch')
+                return
+
+            except requests.exceptions.RequestException as e:
+                wait = RPC_RETRY_BACKOFF ** attempt
+                if attempt < RPC_RETRY_ATTEMPTS - 1:
+                    logger.warning(f'RPC metadata batch failed (attempt {attempt+1}): {e}. Retrying in {wait}s...')
+                    time.sleep(wait)
                 else:
-                    logger.debug(f'No metadata found for {mint[:8]}... at PDA {metadata_pda[:8]}...')
+                    logger.error(f'RPC metadata batch failed after {RPC_RETRY_ATTEMPTS} attempts: {e}')
+            except Exception as e:
+                logger.error(f'Unexpected error processing metadata batch: {e}', exc_info=True)
+                break
 
-            if found_count > 0:
-                logger.debug(f'Successfully fetched metadata for {found_count}/{len(metadata_accounts)} tokens in this batch')
-
-        except requests.exceptions.RequestException as e:
-            logger.error(f'RPC request failed for metadata batch: {e}')
-            for mint, _ in metadata_accounts:
-                self.metadata_cache.setdefault(mint, (None, None, None))
-        except Exception as e:
-            logger.error(f'Unexpected error processing metadata batch: {e}', exc_info=True)
-            for mint, _ in metadata_accounts:
-                self.metadata_cache.setdefault(mint, (None, None, None))
+        for mint, _ in metadata_accounts:
+            self.metadata_cache.setdefault(mint, (None, None, None))
 
     def _derive_metadata_pda(self, mint_address: str) -> Optional[str]:
         """

@@ -1,9 +1,16 @@
 import logging
+import time
 from typing import Dict, List
 import requests
 from ...config import Config
 
 logger = logging.getLogger(__name__)
+
+RPC_BATCH_SIZE = 100
+RPC_TIMEOUT = 30
+RPC_RETRY_ATTEMPTS = 3
+RPC_RETRY_BACKOFF = 2
+RPC_BATCH_DELAY = 0.1
 
 
 class DecimalsResolver:
@@ -30,9 +37,10 @@ class DecimalsResolver:
             s = s.replace('\x00', '').strip()
             if s and s not in self.decimals_cache:
                 normalized.append(s)
-        batch_size = 500
-        for i in range(0, len(normalized), batch_size):
-            batch = normalized[i:i + batch_size]
+        total_batches = (len(normalized) + RPC_BATCH_SIZE - 1) // RPC_BATCH_SIZE
+        for i in range(0, len(normalized), RPC_BATCH_SIZE):
+            batch = normalized[i:i + RPC_BATCH_SIZE]
+            batch_num = i // RPC_BATCH_SIZE + 1
 
             # Create mapping from id to mint address
             id_to_mint = {}
@@ -47,40 +55,52 @@ class DecimalsResolver:
                     'params': [mint, {'encoding': 'jsonParsed'}]
                 })
 
-            try:
-                resp = requests.post(self.rpc_url, json=payload, timeout=30)
-                resp.raise_for_status()
-                results = resp.json()
+            success = False
+            for attempt in range(RPC_RETRY_ATTEMPTS):
+                try:
+                    resp = requests.post(self.rpc_url, json=payload, timeout=RPC_TIMEOUT)
+                    resp.raise_for_status()
+                    results = resp.json()
 
-                # Handle single response wrapped in dict
-                if isinstance(results, dict) and 'result' in results:
-                    results = [results]
+                    # Handle single response wrapped in dict
+                    if isinstance(results, dict) and 'result' in results:
+                        results = [results]
 
-                # Match responses by 'id' field (responses may be out of order)
-                for item in results:
-                    response_id = item.get('id')
-                    if response_id is None or response_id not in id_to_mint:
-                        logger.debug(f'Received response with unexpected id: {response_id}')
-                        continue
+                    # Match responses by 'id' field (responses may be out of order)
+                    for item in results:
+                        response_id = item.get('id')
+                        if response_id is None or response_id not in id_to_mint:
+                            logger.debug(f'Received response with unexpected id: {response_id}')
+                            continue
 
-                    mint = id_to_mint[response_id]
-                    decimals, account_exists = self._parse_rpc_response(item)
+                        mint = id_to_mint[response_id]
+                        decimals, account_exists = self._parse_rpc_response(item)
 
-                    if decimals is not None:
-                        self.decimals_cache[mint] = int(decimals)
-                        logger.debug(f'Resolved decimals for {mint[:8]}...: {decimals}')
-                    elif not account_exists:
-                        # Account doesn't exist on chain - leave as None
-                        logger.debug(f'Account does not exist for {mint[:8]}..., decimals=None')
-                        self.decimals_cache.setdefault(mint, None)
+                        if decimals is not None:
+                            self.decimals_cache[mint] = int(decimals)
+                            logger.debug(f'Resolved decimals for {mint[:8]}...: {decimals}')
+                        elif not account_exists:
+                            logger.debug(f'Account does not exist for {mint[:8]}..., decimals=None')
+                            self.decimals_cache.setdefault(mint, None)
+                        else:
+                            logger.warning(f'Could not parse decimals for {mint}, decimals=None')
+                            self.decimals_cache.setdefault(mint, None)
+                    success = True
+                    break
+                except requests.exceptions.RequestException as e:
+                    wait = RPC_RETRY_BACKOFF ** attempt
+                    if attempt < RPC_RETRY_ATTEMPTS - 1:
+                        logger.warning(f'RPC batch {batch_num}/{total_batches} failed (attempt {attempt+1}): {e}. Retrying in {wait}s...')
+                        time.sleep(wait)
                     else:
-                        # Account exists but failed to parse
-                        logger.warning(f'Could not parse decimals for {mint}, decimals=None')
-                        self.decimals_cache.setdefault(mint, None)
-            except requests.exceptions.RequestException as e:
-                logger.error(f'RPC request failed: {e}')
+                        logger.error(f'RPC batch {batch_num}/{total_batches} failed after {RPC_RETRY_ATTEMPTS} attempts: {e}')
+
+            if not success:
                 for mint in batch:
                     self.decimals_cache.setdefault(mint, None)
+
+            if RPC_BATCH_DELAY > 0 and i + RPC_BATCH_SIZE < len(normalized):
+                time.sleep(RPC_BATCH_DELAY)
         result = {}
         found_count = 0
         not_found_count = 0
