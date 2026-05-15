@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS unverified_tokens (
     decimals INTEGER,
 
     -- Token metadata
-    symbol VARCHAR(20),
+    symbol VARCHAR(64),
     name VARCHAR(255),
 
     -- Price and market data

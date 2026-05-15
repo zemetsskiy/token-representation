@@ -8,6 +8,24 @@ from ..config import Config
 
 logger = logging.getLogger(__name__)
 
+# Column width limits for unverified_tokens (must match _ensure_table_exists).
+# Defensive cap so a future longer-than-expected symbol can't crash the upsert
+# even before the schema is migrated.
+SYMBOL_MAX_LEN = 64
+NAME_MAX_LEN = 255
+
+
+def _clip_text(value: Optional[str], max_len: int) -> Optional[str]:
+    """Strip NULs and clip to max_len characters. Returns None for None/empty."""
+    if value is None:
+        return None
+    s = str(value).replace('\x00', '').strip()
+    if not s:
+        return None
+    if len(s) > max_len:
+        return s[:max_len]
+    return s
+
 
 class PostgresClient:
     """
@@ -51,20 +69,26 @@ class PostgresClient:
 
             self.connection.autocommit = False
             self.cursor = self.connection.cursor(cursor_factory=psycopg2.extras.DictCursor)
+            # Kill idle-in-transaction connections after 60s to prevent lock hogging
+            self.cursor.execute("SET idle_in_transaction_session_timeout = '60s'")
+            self.connection.commit()
             self._ensure_table_exists()
         except Exception as e:
             logger.error(f'Failed to connect to PostgreSQL: {e}')
             raise
 
     def _ensure_table_exists(self):
-        """Create unverified_tokens table if it doesn't exist."""
+        """Create unverified_tokens table if it doesn't exist.
+        Uses lock_timeout to avoid blocking other queries if table is locked."""
         create_table_sql = """
+        SET lock_timeout = '5s';
+
         CREATE TABLE IF NOT EXISTS unverified_tokens (
             id BIGSERIAL PRIMARY KEY,
             contract_address VARCHAR(48) NOT NULL,
             chain VARCHAR(50) NOT NULL,
             decimals INTEGER,
-            symbol VARCHAR(20),
+            symbol VARCHAR(64),
             name VARCHAR(255),
             price_usd DOUBLE PRECISION DEFAULT 0,
             market_cap_usd DOUBLE PRECISION DEFAULT 0,
@@ -81,15 +105,31 @@ class PostgresClient:
         CREATE INDEX IF NOT EXISTS idx_unverified_chain ON unverified_tokens(chain);
         CREATE INDEX IF NOT EXISTS idx_unverified_updated_at ON unverified_tokens(updated_at DESC);
         CREATE INDEX IF NOT EXISTS idx_unverified_contract_chain ON unverified_tokens(contract_address, chain);
+
+        ALTER TABLE unverified_tokens ADD COLUMN IF NOT EXISTS total_liquidity_usd DOUBLE PRECISION DEFAULT 0;
+        ALTER TABLE unverified_tokens ADD COLUMN IF NOT EXISTS last_trade_time TIMESTAMP;
+
+        -- Widen symbol if migrating an older schema (idempotent: only runs if narrower than 64).
+        -- Token-2022 + Metaplex can return symbols longer than the original 20-char cap,
+        -- and the old length crashed upserts (StringDataRightTruncation).
+        DO $$
+        BEGIN
+          IF (SELECT character_maximum_length
+                FROM information_schema.columns
+                WHERE table_name='unverified_tokens' AND column_name='symbol') < 64 THEN
+            ALTER TABLE unverified_tokens ALTER COLUMN symbol TYPE varchar(64);
+          END IF;
+        END$$;
+
+        RESET lock_timeout;
         """
         try:
             self.cursor.execute(create_table_sql)
             self.connection.commit()
             logger.info("Ensured unverified_tokens table exists")
         except Exception as e:
-            logger.error(f"Failed to create unverified_tokens table: {e}")
+            logger.warning(f"DDL check skipped (lock timeout or error): {e}")
             self.connection.rollback()
-            raise
 
     def _reconnect(self):
         """Reconnect to PostgreSQL."""
@@ -114,6 +154,7 @@ class PostgresClient:
             results = []
             for row in self.cursor.fetchall():
                 results.append(dict(zip(columns, row)))
+            self.connection.commit()  # Release implicit transaction lock
             return results
         except Exception as e:
             logger.error(f'Query execution failed: {e}')
@@ -184,6 +225,54 @@ class PostgresClient:
                 pass
             return {}
 
+    def get_known_token_data(self, token_addresses: list, chain: str = 'solana') -> dict:
+        """
+        Fetch known decimals, symbol, name for tokens already in PostgreSQL.
+        Used to pre-populate RPC caches and skip redundant calls.
+        Returns ALL existing tokens (even those with NULL symbol) so that
+        tokens without Metaplex metadata are also cached and not re-fetched via RPC.
+
+        Returns:
+            Dict mapping contract_address -> {'decimals': int|None, 'symbol': str|None, 'name': str|None}
+        """
+        if not token_addresses:
+            return {}
+
+        query = """
+        SELECT contract_address, decimals, symbol, name, supply
+        FROM unverified_tokens
+        WHERE chain = %s AND contract_address = ANY(%s)
+        """
+
+        try:
+            self.cursor.execute(query, (chain, token_addresses))
+            results = self.cursor.fetchall()
+            self.connection.commit()  # Release implicit transaction lock
+
+            data = {}
+            for row in results:
+                data[row[0]] = {
+                    'decimals': row[1],
+                    'symbol': row[2],
+                    'name': row[3],
+                    'supply': row[4]
+                }
+
+            if data:
+                has_decimals = sum(1 for d in data.values() if d['decimals'] is not None)
+                has_metadata = sum(1 for d in data.values() if d['symbol'] is not None)
+                logger.info(f'Found {len(data)} known tokens in PostgreSQL ({has_decimals} with decimals, {has_metadata} with metadata)')
+
+            return data
+
+        except Exception as e:
+            logger.warning(f'Failed to fetch known token data: {e}')
+            try:
+                self.connection.rollback()
+            except Exception:
+                pass
+            return {}
+
     def insert_token_metrics_batch(
         self,
         df: pl.DataFrame,
@@ -236,11 +325,13 @@ class PostgresClient:
             market_cap_usd,
             supply,
             largest_lp_pool_usd,
+            total_liquidity_usd,
+            last_trade_time,
             first_tx_date,
             view_source,
             updated_at
         ) VALUES (
-            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
         )
         ON CONFLICT (contract_address, chain)
         DO UPDATE SET
@@ -252,6 +343,8 @@ class PostgresClient:
             market_cap_usd = EXCLUDED.market_cap_usd,
             supply = EXCLUDED.supply,
             largest_lp_pool_usd = EXCLUDED.largest_lp_pool_usd,
+            total_liquidity_usd = EXCLUDED.total_liquidity_usd,
+            last_trade_time = GREATEST(unverified_tokens.last_trade_time, EXCLUDED.last_trade_time),
             view_source = EXCLUDED.view_source,
             updated_at = EXCLUDED.updated_at
         """
@@ -286,12 +379,14 @@ class PostgresClient:
                     contract_addr,
                     chain,
                     decimals_to_use,
-                    row.get('symbol'),
-                    row.get('name'),
+                    _clip_text(row.get('symbol'), SYMBOL_MAX_LEN),
+                    _clip_text(row.get('name'), NAME_MAX_LEN),
                     float(row.get('price_usd', 0) or 0),
                     float(row.get('market_cap_usd', 0) or 0),
                     float(row.get('supply', 0) or 0),
                     float(row.get('largest_lp_pool_usd', 0) or 0),
+                    float(row.get('total_liquidity_usd', 0) or 0),
+                    row.get('last_trade_time'),
                     row.get('first_tx_date'),
                     view_source,
                     update_time
@@ -302,13 +397,24 @@ class PostgresClient:
             if decimals_new > 0:
                 logger.info(f'  Using new decimals for {decimals_new:,} tokens')
 
-            # Insert/Update in batches
+            # Insert/Update in batches with deadlock retry
+            import time as _time
             for i in range(0, len(rows), batch_size):
                 batch = rows[i:i + batch_size]
-                self.cursor.executemany(upsert_query, batch)
-                self.connection.commit()
-                total_inserted += len(batch)
-                logger.info(f'  Upserted batch {i // batch_size + 1}: {len(batch)} rows (total: {total_inserted:,})')
+                for attempt in range(3):
+                    try:
+                        self.cursor.executemany(upsert_query, batch)
+                        self.connection.commit()
+                        total_inserted += len(batch)
+                        logger.info(f'  Upserted batch {i // batch_size + 1}: {len(batch)} rows (total: {total_inserted:,})')
+                        break
+                    except Exception as batch_err:
+                        self.connection.rollback()
+                        if 'deadlock' in str(batch_err).lower() and attempt < 2:
+                            logger.warning(f'  Deadlock on batch {i // batch_size + 1}, retry {attempt + 1}/3 in {2 ** attempt}s')
+                            _time.sleep(2 ** attempt)
+                        else:
+                            raise
 
             logger.info(f'Successfully upserted {total_inserted:,} token metrics')
             return total_inserted
@@ -378,8 +484,8 @@ class PostgresClient:
                     row.get('mint'),
                     row.get('chain', row.get('blockchain', 'solana')),
                     row.get('decimals'),
-                    row.get('symbol'),
-                    row.get('name'),
+                    _clip_text(row.get('symbol'), SYMBOL_MAX_LEN),
+                    _clip_text(row.get('name'), NAME_MAX_LEN),
                     float(row.get('price_usd', 0) or 0),
                     float(row.get('market_cap_usd', 0) or 0),
                     float(row.get('supply', 0) or 0),

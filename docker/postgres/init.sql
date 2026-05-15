@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS token_data.token_metrics (
     decimals INTEGER,
 
     -- Token metadata
-    symbol VARCHAR(20),
+    symbol VARCHAR(64),
     name VARCHAR(255),
 
     -- Price and market data
