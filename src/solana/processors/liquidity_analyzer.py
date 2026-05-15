@@ -11,7 +11,12 @@ STABLECOINS = {
     'USDT': 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB'
 }
 SOL_ADDRESS = 'So11111111111111111111111111111111111111112'
-# SOL price is fetched from Redis at runtime - no hardcoded fallback
+LST_ADDRESSES = {
+    'JitoSOL': 'J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn',
+    'jupSOL': 'jupSoLaHXQiZZTSfEWMTRRgpnyFm8f6sZdosWBjx93v',
+    'mSOL': 'mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So',
+    'bSOL': 'bSo13r4TkiE4KumL71LsHTPpL2euBYLFx6h9HP3piy1',
+}
 
 
 class LiquidityAnalyzer:
@@ -25,53 +30,37 @@ class LiquidityAnalyzer:
         self.db_client = db_client
         self.sol_price_usd = None  # Must be set via set_sol_price() before use
 
-    def get_comprehensive_swap_data_for_chunk(self) -> Dict[str, List[Dict]]:
+    def get_comprehensive_swap_data_for_chunk(self, interval_days: int = 7) -> Dict[str, List[Dict]]:
         """
-        Get ALL swap-related data for tokens in chunk_tokens table using ONE powerful query.
-        This consolidates: first_swap dates, pool metrics, and VWAP price data.
+        Get ALL swap-related data for tokens in chunk_tokens table.
+        Uses consolidated query for VWAP prices + first_swaps,
+        and separate per-pool query for multi-pool liquidity data.
 
         Returns:
             Dict with keys:
-                - 'pool_data': List of pool metrics
+                - 'pool_data': List of pool metrics (per-pool, not per-token)
                 - 'first_swaps': List of first swap dates
                 - 'prices': List of VWAP price data with method info
         """
-        logger.info('Fetching comprehensive swap data from chunk_tokens table (1 CONSOLIDATED query with VWAP)')
+        logger.info('Fetching comprehensive swap data from chunk_tokens table (CONSOLIDATED query + per-pool query)')
 
-        comprehensive_data = self._get_comprehensive_swap_data()
+        comprehensive_data = self._get_comprehensive_swap_data(interval_days=interval_days)
 
-        logger.info(f'Comprehensive swap query completed: {len(comprehensive_data)} token records')
+        logger.info(f'Comprehensive swap query completed: {len(comprehensive_data)} token records (interval: {interval_days}d)')
 
-        # Separate data into different categories for downstream processing
-        pool_data = []
         first_swaps = []
         prices = []
-
-        # Track price method distribution for logging
         price_methods = {}
 
         for row in comprehensive_data:
             token = row['token']
 
-            # First swap data
             if row.get('first_swap'):
                 first_swaps.append({
                     'token': token,
                     'first_swap': row['first_swap']
                 })
 
-            # Pool data (if this token has pool info)
-            if row.get('latest_source') and row.get('latest_base_balance', 0) > 0:
-                pool_data.append({
-                    'canonical_source': row['latest_source'],
-                    'base_coin': row['latest_base_coin'],
-                    'quote_coin': row['latest_quote_coin'],
-                    'last_base_balance': row['latest_base_balance'],
-                    'last_quote_balance': row['latest_quote_balance'],
-                    'liquidity_usd': row.get('liquidity_usd', 0)
-                })
-
-            # Price data - now using VWAP from trade amounts
             if row.get('price_raw') and row['price_raw'] > 0:
                 price_method = row.get('price_method', 'UNKNOWN')
                 price_methods[price_method] = price_methods.get(price_method, 0) + 1
@@ -80,23 +69,22 @@ class LiquidityAnalyzer:
                     'token': token,
                     'price_reference': row['latest_price_reference'],
                     'price_reference_type': row.get('price_reference_type', 'STABLE'),
-                    'price_raw': row['price_raw'],  # VWAP price in reference units
+                    'price_raw': row['price_raw'],
                     'price_method': price_method,
-                    # Keep pool info for liquidity calculation
                     'base_coin': row['latest_base_coin'],
                     'quote_coin': row['latest_quote_coin'],
                     'base_balance': row['latest_base_balance'],
                     'quote_balance': row['latest_quote_balance'],
-                    # Trade activity info
                     'trades_5m': row.get('trades_5m', 0),
                     'trades_1h': row.get('trades_1h', 0),
                     'trades_24h': row.get('trades_24h', 0),
                 })
 
-        # Log price method distribution
         if price_methods:
             method_str = ', '.join([f'{k}: {v}' for k, v in sorted(price_methods.items())])
             logger.info(f'Price methods used: {method_str}')
+
+        pool_data = self._get_pools_for_chunk(interval_days=interval_days)
 
         logger.info(f'Extracted: {len(first_swaps)} first swaps, {len(pool_data)} pools, {len(prices)} VWAP prices')
 
@@ -106,7 +94,7 @@ class LiquidityAnalyzer:
             'prices': prices
         }
 
-    def _get_comprehensive_swap_data(self) -> List[Dict]:
+    def _get_comprehensive_swap_data(self, interval_days: int = 7) -> List[Dict]:
         """
         CONSOLIDATED QUERY: Get ALL swap data (first_swap, pools, VWAP prices) in ONE query.
         Uses Trade-Based VWAP pricing with cascading fallback for accuracy.
@@ -115,7 +103,6 @@ class LiquidityAnalyzer:
         usdc = STABLECOINS['USDC']
         usdt = STABLECOINS['USDT']
 
-        # ONLY include direct DEX sources - exclude aggregators
         allowed_sources = [
             'pumpfun_bondingcurve',
             'raydium_swap_v4',
@@ -164,9 +151,7 @@ class LiquidityAnalyzer:
                 if(base_coin IN (SELECT mint FROM {temp_db}.chunk_tokens), quote_pool_balance_after, base_pool_balance_after) AS ref_balance_raw
             FROM solana.swaps
             PREWHERE
-                -- Time filter: we only need last 7 days for VWAP + last trade
-                block_time >= now() - INTERVAL 7 DAY
-                -- Token filter: either base or quote is in our chunk
+                block_time >= now() - INTERVAL {interval_days} DAY
                 AND (
                     (base_coin IN (SELECT mint FROM {temp_db}.chunk_tokens) AND (quote_coin = '{SOL_ADDRESS}' OR quote_coin IN ('{usdc}', '{usdt}')))
                     OR
@@ -190,10 +175,13 @@ class LiquidityAnalyzer:
                     / greatest(sumIf(token_amount, block_time >= now() - INTERVAL 1 HOUR AND ref_type = 'STABLE'), 1) AS stable_vwap_1h,
                 sumIf(ref_amount, block_time >= now() - INTERVAL 24 HOUR AND ref_type = 'STABLE')
                     / greatest(sumIf(token_amount, block_time >= now() - INTERVAL 24 HOUR AND ref_type = 'STABLE'), 1) AS stable_vwap_24h,
+                sumIf(ref_amount, block_time >= now() - INTERVAL 7 DAY AND ref_type = 'STABLE')
+                    / greatest(sumIf(token_amount, block_time >= now() - INTERVAL 7 DAY AND ref_type = 'STABLE'), 1) AS stable_vwap_7d,
                 argMaxIf(ref_amount / token_amount, block_time, ref_type = 'STABLE') AS stable_last,
                 countIf(block_time >= now() - INTERVAL 5 MINUTE AND ref_type = 'STABLE') AS stable_trades_5m,
                 countIf(block_time >= now() - INTERVAL 1 HOUR AND ref_type = 'STABLE') AS stable_trades_1h,
                 countIf(block_time >= now() - INTERVAL 24 HOUR AND ref_type = 'STABLE') AS stable_trades_24h,
+                countIf(block_time >= now() - INTERVAL 7 DAY AND ref_type = 'STABLE') AS stable_trades_7d,
 
                 -- SOL VWAP
                 sumIf(ref_amount, block_time >= now() - INTERVAL 5 MINUTE AND ref_type = 'SOL')
@@ -202,42 +190,25 @@ class LiquidityAnalyzer:
                     / greatest(sumIf(token_amount, block_time >= now() - INTERVAL 1 HOUR AND ref_type = 'SOL'), 1) AS sol_vwap_1h,
                 sumIf(ref_amount, block_time >= now() - INTERVAL 24 HOUR AND ref_type = 'SOL')
                     / greatest(sumIf(token_amount, block_time >= now() - INTERVAL 24 HOUR AND ref_type = 'SOL'), 1) AS sol_vwap_24h,
+                sumIf(ref_amount, block_time >= now() - INTERVAL 7 DAY AND ref_type = 'SOL')
+                    / greatest(sumIf(token_amount, block_time >= now() - INTERVAL 7 DAY AND ref_type = 'SOL'), 1) AS sol_vwap_7d,
                 argMaxIf(ref_amount / token_amount, block_time, ref_type = 'SOL') AS sol_last,
                 countIf(block_time >= now() - INTERVAL 5 MINUTE AND ref_type = 'SOL') AS sol_trades_5m,
                 countIf(block_time >= now() - INTERVAL 1 HOUR AND ref_type = 'SOL') AS sol_trades_1h,
                 countIf(block_time >= now() - INTERVAL 24 HOUR AND ref_type = 'SOL') AS sol_trades_24h,
+                countIf(block_time >= now() - INTERVAL 7 DAY AND ref_type = 'SOL') AS sol_trades_7d,
 
-                -- Best pool info for liquidity reporting
-                argMax(source, CASE
+                -- Latest pool state from most recent trade (not peak liquidity)
+                argMax(source, block_time) AS best_source,
+                argMax(base_coin, block_time) AS best_base_coin,
+                argMax(quote_coin, block_time) AS best_quote_coin,
+                argMax(base_pool_balance_after, block_time) AS best_base_balance,
+                argMax(quote_pool_balance_after, block_time) AS best_quote_balance,
+                argMax(CASE
                     WHEN ref_type = 'SOL' THEN ref_balance_raw / 1e9 * {self.sol_price_usd}
                     WHEN ref_type = 'STABLE' THEN ref_balance_raw / 1e6
                     ELSE 0
-                END) AS best_source,
-                argMax(base_coin, CASE
-                    WHEN ref_type = 'SOL' THEN ref_balance_raw / 1e9 * {self.sol_price_usd}
-                    WHEN ref_type = 'STABLE' THEN ref_balance_raw / 1e6
-                    ELSE 0
-                END) AS best_base_coin,
-                argMax(quote_coin, CASE
-                    WHEN ref_type = 'SOL' THEN ref_balance_raw / 1e9 * {self.sol_price_usd}
-                    WHEN ref_type = 'STABLE' THEN ref_balance_raw / 1e6
-                    ELSE 0
-                END) AS best_quote_coin,
-                argMax(base_pool_balance_after, CASE
-                    WHEN ref_type = 'SOL' THEN ref_balance_raw / 1e9 * {self.sol_price_usd}
-                    WHEN ref_type = 'STABLE' THEN ref_balance_raw / 1e6
-                    ELSE 0
-                END) AS best_base_balance,
-                argMax(quote_pool_balance_after, CASE
-                    WHEN ref_type = 'SOL' THEN ref_balance_raw / 1e9 * {self.sol_price_usd}
-                    WHEN ref_type = 'STABLE' THEN ref_balance_raw / 1e6
-                    ELSE 0
-                END) AS best_quote_balance,
-                max(CASE
-                    WHEN ref_type = 'SOL' THEN ref_balance_raw / 1e9 * {self.sol_price_usd}
-                    WHEN ref_type = 'STABLE' THEN ref_balance_raw / 1e6
-                    ELSE 0
-                END) AS liquidity_usd,
+                END, block_time) AS liquidity_usd,
 
                 min(block_time) AS first_swap_time
             FROM unified_swaps
@@ -257,16 +228,18 @@ class LiquidityAnalyzer:
 
             -- Pick VWAP from ref_type with more 24h trades (more active = more reliable price)
             multiIf(
-                -- SOL has more trades - use SOL VWAP
-                sol_trades_24h > stable_trades_24h AND sol_trades_5m >= 3, sol_vwap_5m,
-                sol_trades_24h > stable_trades_24h AND sol_trades_1h >= 5, sol_vwap_1h,
-                sol_trades_24h > stable_trades_24h AND sol_trades_24h >= 5, sol_vwap_24h,
-                sol_trades_24h > stable_trades_24h AND sol_last > 0, sol_last,
-                -- STABLE has more trades - use STABLE VWAP
-                stable_trades_24h >= sol_trades_24h AND stable_trades_5m >= 3, stable_vwap_5m,
-                stable_trades_24h >= sol_trades_24h AND stable_trades_1h >= 5, stable_vwap_1h,
-                stable_trades_24h >= sol_trades_24h AND stable_trades_24h >= 5, stable_vwap_24h,
-                stable_trades_24h >= sol_trades_24h AND stable_last > 0, stable_last,
+                -- SOL has more trades - use SOL VWAP (cascade: 5m → 1h → 24h → 7d → last)
+                sol_trades_7d > stable_trades_7d AND sol_trades_5m >= 3, sol_vwap_5m,
+                sol_trades_7d > stable_trades_7d AND sol_trades_1h >= 5, sol_vwap_1h,
+                sol_trades_7d > stable_trades_7d AND sol_trades_24h >= 5, sol_vwap_24h,
+                sol_trades_7d > stable_trades_7d AND sol_trades_7d >= 10, sol_vwap_7d,
+                sol_trades_7d > stable_trades_7d AND sol_last > 0, sol_last,
+                -- STABLE has more trades
+                stable_trades_7d >= sol_trades_7d AND stable_trades_5m >= 3, stable_vwap_5m,
+                stable_trades_7d >= sol_trades_7d AND stable_trades_1h >= 5, stable_vwap_1h,
+                stable_trades_7d >= sol_trades_7d AND stable_trades_24h >= 5, stable_vwap_24h,
+                stable_trades_7d >= sol_trades_7d AND stable_trades_7d >= 10, stable_vwap_7d,
+                stable_trades_7d >= sol_trades_7d AND stable_last > 0, stable_last,
                 -- Fallback to any available
                 sol_last > 0, sol_last,
                 stable_last > 0, stable_last,
@@ -275,14 +248,16 @@ class LiquidityAnalyzer:
 
             -- Price method
             multiIf(
-                sol_trades_24h > stable_trades_24h AND sol_trades_5m >= 3, 'SOL_VWAP_5M',
-                sol_trades_24h > stable_trades_24h AND sol_trades_1h >= 5, 'SOL_VWAP_1H',
-                sol_trades_24h > stable_trades_24h AND sol_trades_24h >= 5, 'SOL_VWAP_24H',
-                sol_trades_24h > stable_trades_24h AND sol_last > 0, 'SOL_LAST',
-                stable_trades_24h >= sol_trades_24h AND stable_trades_5m >= 3, 'STABLE_VWAP_5M',
-                stable_trades_24h >= sol_trades_24h AND stable_trades_1h >= 5, 'STABLE_VWAP_1H',
-                stable_trades_24h >= sol_trades_24h AND stable_trades_24h >= 5, 'STABLE_VWAP_24H',
-                stable_trades_24h >= sol_trades_24h AND stable_last > 0, 'STABLE_LAST',
+                sol_trades_7d > stable_trades_7d AND sol_trades_5m >= 3, 'SOL_VWAP_5M',
+                sol_trades_7d > stable_trades_7d AND sol_trades_1h >= 5, 'SOL_VWAP_1H',
+                sol_trades_7d > stable_trades_7d AND sol_trades_24h >= 5, 'SOL_VWAP_24H',
+                sol_trades_7d > stable_trades_7d AND sol_trades_7d >= 10, 'SOL_VWAP_7D',
+                sol_trades_7d > stable_trades_7d AND sol_last > 0, 'SOL_LAST',
+                stable_trades_7d >= sol_trades_7d AND stable_trades_5m >= 3, 'STABLE_VWAP_5M',
+                stable_trades_7d >= sol_trades_7d AND stable_trades_1h >= 5, 'STABLE_VWAP_1H',
+                stable_trades_7d >= sol_trades_7d AND stable_trades_24h >= 5, 'STABLE_VWAP_24H',
+                stable_trades_7d >= sol_trades_7d AND stable_trades_7d >= 10, 'STABLE_VWAP_7D',
+                stable_trades_7d >= sol_trades_7d AND stable_last > 0, 'STABLE_LAST',
                 sol_last > 0, 'SOL_LAST',
                 stable_last > 0, 'STABLE_LAST',
                 'NONE'
@@ -290,8 +265,8 @@ class LiquidityAnalyzer:
 
             -- Reference type
             multiIf(
-                sol_trades_24h > stable_trades_24h AND (sol_trades_5m >= 3 OR sol_trades_1h >= 5 OR sol_trades_24h >= 5 OR sol_last > 0), 'SOL',
-                stable_trades_24h >= sol_trades_24h AND (stable_trades_5m >= 3 OR stable_trades_1h >= 5 OR stable_trades_24h >= 5 OR stable_last > 0), 'STABLE',
+                sol_trades_7d > stable_trades_7d AND (sol_trades_5m >= 3 OR sol_trades_1h >= 5 OR sol_trades_24h >= 5 OR sol_trades_7d >= 10 OR sol_last > 0), 'SOL',
+                stable_trades_7d >= sol_trades_7d AND (stable_trades_5m >= 3 OR stable_trades_1h >= 5 OR stable_trades_24h >= 5 OR stable_trades_7d >= 10 OR stable_last > 0), 'STABLE',
                 sol_last > 0, 'SOL',
                 stable_last > 0, 'STABLE',
                 'NONE'
@@ -299,8 +274,8 @@ class LiquidityAnalyzer:
 
             -- Reference coin address
             multiIf(
-                sol_trades_24h > stable_trades_24h AND (sol_trades_5m >= 3 OR sol_trades_1h >= 5 OR sol_trades_24h >= 5 OR sol_last > 0), '{SOL_ADDRESS}',
-                stable_trades_24h >= sol_trades_24h AND (stable_trades_5m >= 3 OR stable_trades_1h >= 5 OR stable_trades_24h >= 5 OR stable_last > 0), '{usdc}',
+                sol_trades_7d > stable_trades_7d AND (sol_trades_5m >= 3 OR sol_trades_1h >= 5 OR sol_trades_24h >= 5 OR sol_trades_7d >= 10 OR sol_last > 0), '{SOL_ADDRESS}',
+                stable_trades_7d >= sol_trades_7d AND (stable_trades_5m >= 3 OR stable_trades_1h >= 5 OR stable_trades_24h >= 5 OR stable_trades_7d >= 10 OR stable_last > 0), '{usdc}',
                 sol_last > 0, '{SOL_ADDRESS}',
                 stable_last > 0, '{usdc}',
                 ''
@@ -310,54 +285,27 @@ class LiquidityAnalyzer:
             liquidity_usd,
 
             -- Trade counts (from selected ref_type)
-            if(sol_trades_24h > stable_trades_24h, sol_trades_5m, stable_trades_5m) AS trades_5m,
-            if(sol_trades_24h > stable_trades_24h, sol_trades_1h, stable_trades_1h) AS trades_1h,
-            if(sol_trades_24h > stable_trades_24h, sol_trades_24h, stable_trades_24h) AS trades_24h
+            if(sol_trades_7d > stable_trades_7d, sol_trades_5m, stable_trades_5m) AS trades_5m,
+            if(sol_trades_7d > stable_trades_7d, sol_trades_1h, stable_trades_1h) AS trades_1h,
+            if(sol_trades_7d > stable_trades_7d, sol_trades_24h, stable_trades_24h) AS trades_24h
 
         FROM token_vwap
-        WHERE multiIf(
-            sol_trades_24h > stable_trades_24h AND sol_trades_5m >= 3, sol_vwap_5m,
-            sol_trades_24h > stable_trades_24h AND sol_trades_1h >= 5, sol_vwap_1h,
-            sol_trades_24h > stable_trades_24h AND sol_trades_24h >= 5, sol_vwap_24h,
-            sol_trades_24h > stable_trades_24h AND sol_last > 0, sol_last,
-            stable_trades_24h >= sol_trades_24h AND stable_trades_5m >= 3, stable_vwap_5m,
-            stable_trades_24h >= sol_trades_24h AND stable_trades_1h >= 5, stable_vwap_1h,
-            stable_trades_24h >= sol_trades_24h AND stable_trades_24h >= 5, stable_vwap_24h,
-            stable_trades_24h >= sol_trades_24h AND stable_last > 0, stable_last,
-            sol_last > 0, sol_last,
-            stable_last > 0, stable_last,
-            0
-        ) > 0
+        WHERE price_raw > 0
         """
 
         logger.debug(f'Executing CONSOLIDATED swap aggregation from {temp_db}.chunk_tokens table')
         try:
             result = self.db_client.execute_query_dict(query)
 
-            # Decode binary token addresses
             decoded_result = []
             for row in result:
                 token_value = row['token']
                 base_coin_value = row['latest_base_coin']
                 quote_coin_value = row['latest_quote_coin']
 
-                # Decode token
-                if isinstance(token_value, bytes):
-                    token_str = token_value.decode('utf-8').rstrip('\x00')
-                else:
-                    token_str = str(token_value).rstrip('\x00')
-
-                # Decode base_coin
-                if isinstance(base_coin_value, bytes):
-                    base_coin_str = base_coin_value.decode('utf-8').rstrip('\x00')
-                else:
-                    base_coin_str = str(base_coin_value).rstrip('\x00')
-
-                # Decode quote_coin
-                if isinstance(quote_coin_value, bytes):
-                    quote_coin_str = quote_coin_value.decode('utf-8').rstrip('\x00')
-                else:
-                    quote_coin_str = str(quote_coin_value).rstrip('\x00')
+                token_str = token_value.decode('utf-8').rstrip('\x00') if isinstance(token_value, bytes) else str(token_value).rstrip('\x00')
+                base_coin_str = base_coin_value.decode('utf-8').rstrip('\x00') if isinstance(base_coin_value, bytes) else str(base_coin_value).rstrip('\x00')
+                quote_coin_str = quote_coin_value.decode('utf-8').rstrip('\x00') if isinstance(quote_coin_value, bytes) else str(quote_coin_value).rstrip('\x00')
 
                 price_reference_value = row['latest_price_reference']
                 if isinstance(price_reference_value, bytes):
@@ -391,44 +339,52 @@ class LiquidityAnalyzer:
             logger.error(f'Failed to get comprehensive swap data: {e}', exc_info=True)
             return []
 
-    def _get_pools_for_chunk(self) -> List[Dict]:
-        """
-        Query pool data for tokens in temp database chunk_tokens table.
-        Filters for pools where base_coin OR quote_coin is in the temp database chunk_tokens table.
-        """
+    def _get_pools_for_chunk(self, interval_days: int = 7) -> List[Dict]:
+        """Query per-pool latest balances for tokens in chunk_tokens table."""
         usdc = STABLECOINS['USDC']
         usdt = STABLECOINS['USDT']
         temp_db = Config.CLICKHOUSE_TEMP_DATABASE
+        lst_addresses = list(LST_ADDRESSES.values())
+        lst_sql = ', '.join([f"'{a}'" for a in lst_addresses])
+
+        allowed_sources = [
+            'pumpfun_bondingcurve',
+            'raydium_swap_v4', 'raydium_swap_cpmm', 'raydium_swap_clmm',
+            'raydium_swap_stable', 'raydium_bondingcurve',
+            'meteora_swap_dlmm', 'meteora_swap_damm', 'meteora_bondingcurve',
+            'orca_swap', 'phoenix_swap', 'lifinity_swap_v2',
+            'pumpswap_swap', 'degenfund',
+        ]
+        allowed_sources_sql = ', '.join([f"'{s}'" for s in allowed_sources])
 
         query = f"""
         SELECT
-            CASE
-                WHEN source LIKE 'jupiter6_%' THEN substring(source, 10)
-                WHEN source LIKE 'jupiter4_%' THEN substring(source, 10)
-                WHEN source LIKE 'raydium_route_%' THEN substring(source, 15)
-                ELSE source
-            END AS canonical_source,
+            source AS canonical_source,
             base_coin,
             quote_coin,
             argMax(base_pool_balance_after, block_time) AS last_base_balance,
-            argMax(quote_pool_balance_after, block_time) AS last_quote_balance
+            argMax(quote_pool_balance_after, block_time) AS last_quote_balance,
+            max(block_time) AS last_trade_time
         FROM solana.swaps
+        PREWHERE block_time >= now() - INTERVAL {interval_days} DAY
         WHERE
-            (
-                (quote_coin = '{SOL_ADDRESS}' OR quote_coin IN ('{usdc}', '{usdt}'))
+            source IN ({allowed_sources_sql})
+            AND (
+                (quote_coin = '{SOL_ADDRESS}' OR quote_coin IN ('{usdc}', '{usdt}') OR quote_coin IN ({lst_sql}))
                 OR
-                (base_coin = '{SOL_ADDRESS}' OR base_coin IN ('{usdc}', '{usdt}'))
+                (base_coin = '{SOL_ADDRESS}' OR base_coin IN ('{usdc}', '{usdt}') OR base_coin IN ({lst_sql}))
             )
-            AND
-            (base_coin IN (SELECT mint FROM {temp_db}.chunk_tokens) OR quote_coin IN (SELECT mint FROM {temp_db}.chunk_tokens))
+            AND (base_coin IN (SELECT mint FROM {temp_db}.chunk_tokens) OR quote_coin IN (SELECT mint FROM {temp_db}.chunk_tokens))
+            AND base_coin_amount > 0
+            AND quote_coin_amount > 0
         GROUP BY canonical_source, base_coin, quote_coin
-        HAVING last_base_balance > 0 AND last_quote_balance > 0
+        HAVING last_base_balance > 0
+            AND last_quote_balance > 0
         """
 
         logger.debug(f'Executing pool aggregation from {temp_db}.chunk_tokens table')
         try:
             result = self.db_client.execute_query_dict(query)
-            # Decode binary token addresses to strings
             decoded_result = []
             for row in result:
                 base_coin_value = row['base_coin']
@@ -449,8 +405,10 @@ class LiquidityAnalyzer:
                     'base_coin': base_coin_str,
                     'quote_coin': quote_coin_str,
                     'last_base_balance': row['last_base_balance'],
-                    'last_quote_balance': row['last_quote_balance']
+                    'last_quote_balance': row['last_quote_balance'],
+                    'last_trade_time': row['last_trade_time'],
                 })
+            logger.info(f'Pool query returned {len(decoded_result)} pools (with LST pairs + latest balance)')
             return decoded_result
         except Exception as e:
             logger.error(f'Failed to get pool metrics: {e}', exc_info=True)

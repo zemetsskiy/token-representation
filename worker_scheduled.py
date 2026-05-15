@@ -29,22 +29,25 @@ VIEW_CONFIGS = {
         'view': 'derived.sol_1000_swaps_3_days',
         'description': '1000+ swaps in 3 days',
         'schedule': 'Daily at 00:00 UTC',
-        'cron': '0 0 * * *',  # minute, hour
-        'interval_minutes': 1440  # 24 hours
+        'cron': '0 0 * * *',
+        'interval_minutes': 1440,
+        'data_interval_days': 7
     },
     'sol_500_swaps_7_days': {
         'view': 'derived.sol_500_swaps_7_days',
         'description': '500+ swaps in 7 days',
         'schedule': 'Every 5 minutes',
         'cron': '*/5 * * * *',
-        'interval_minutes': 5
+        'interval_minutes': 5,
+        'data_interval_days': 7
     },
     'sol_100_swaps_30_days': {
         'view': 'derived.sol_100_swaps_30_days',
         'description': '100+ swaps in 30 days',
         'schedule': 'Daily at 00:10 UTC',
         'cron': '10 0 * * *',
-        'interval_minutes': 1440  # 24 hours
+        'interval_minutes': 1440,
+        'data_interval_days': 30
     }
 }
 
@@ -98,15 +101,16 @@ class ScheduledTokenWorker(TokenAggregationWorker):
     def __init__(self, view_name: str):
         super().__init__()
         self.view_name = view_name
-        self.postgres_client = get_postgres_client()
 
         if view_name not in VIEW_CONFIGS:
             raise ValueError(f"Unknown view: {view_name}. Available views: {list(VIEW_CONFIGS.keys())}")
 
         self.view_config = VIEW_CONFIGS[view_name]
+        self.data_interval_days = self.view_config.get('data_interval_days', 7)
         logger.info(f"Worker initialized for view: {view_name}")
         logger.info(f"Description: {self.view_config['description']}")
         logger.info(f"Schedule: {self.view_config['schedule']}")
+        logger.info(f"Data interval: {self.data_interval_days} days")
 
     def discover_tokens_from_view(self) -> list:
         """
@@ -183,8 +187,8 @@ class ScheduledTokenWorker(TokenAggregationWorker):
             logger.info(f'Step 2/2: Processing {len(all_mints):,} tokens in chunks of {self.chunk_size:,}')
             step_start = time.time()
 
-            all_results_dfs = []
             total_chunks = (len(all_mints) + self.chunk_size - 1) // self.chunk_size
+            total_saved = 0
 
             for chunk_idx in range(0, len(all_mints), self.chunk_size):
                 chunk_mints = all_mints[chunk_idx:chunk_idx + self.chunk_size]
@@ -195,65 +199,44 @@ class ScheduledTokenWorker(TokenAggregationWorker):
                 logger.info(f'CHUNK {chunk_num}/{total_chunks}: Processing {len(chunk_mints):,} tokens')
                 logger.info('=' * 100)
 
-                chunk_df = self._process_chunk(chunk_mints, chunk_num)
-                all_results_dfs.append(chunk_df)
+                try:
+                    chunk_df = self._process_chunk(chunk_mints, chunk_num)
+                except Exception as e:
+                    logger.error(f'Chunk {chunk_num}/{total_chunks} FAILED: {e}', exc_info=True)
+                    logger.warning(f'Skipping chunk {chunk_num}, continuing with next chunk')
+                    continue
 
                 logger.info(f'Chunk {chunk_num}/{total_chunks} complete. Rows: {len(chunk_df):,}')
 
-            # Concatenate all chunk results
-            logger.info('')
-            logger.info('=' * 100)
-            logger.info('Concatenating all chunk results...')
-            final_df = pl.concat(all_results_dfs)
+                # Save chunk immediately to PostgreSQL
+                try:
+                    chunk_df = chunk_df.unique(subset=['mint'], keep='last')
+                    rows_inserted = self.postgres_client.insert_token_metrics_batch(
+                        df=chunk_df,
+                        view_source=self.view_name,
+                        batch_size=1000
+                    )
+                    total_saved += rows_inserted
+                    logger.info(f'Chunk {chunk_num}/{total_chunks} saved: {rows_inserted:,} rows (total saved: {total_saved:,})')
+                except Exception as e:
+                    logger.error(f'Failed to save chunk {chunk_num} to PostgreSQL: {e}', exc_info=True)
+
             self.performance_metrics['process_chunks'] = time.time() - step_start
-            logger.info(f'All chunks processed and concatenated in {self.performance_metrics["process_chunks"]:.2f}s')
-
-            # Calculate total time
             self.performance_metrics['total'] = time.time() - total_start
-
-            # Print results
-            self._print_results(final_df)
             self._print_performance_report()
 
-            # Save results to PostgreSQL
-            logger.info('')
-            logger.info('=' * 100)
-            logger.info('SAVING RESULTS TO POSTGRESQL')
-            logger.info('=' * 100)
-            save_start = time.time()
-
-            # Remove duplicates - keep the last occurrence of each token
-            original_count = len(final_df)
-            final_df = final_df.unique(subset=['mint'], keep='last')
-            deduplicated_count = len(final_df)
-
-            if original_count > deduplicated_count:
-                logger.warning(f'Removed {original_count - deduplicated_count:,} duplicate tokens')
-                logger.info(f'Final unique tokens: {deduplicated_count:,}')
-
+            # Refresh materialized views once at the end
             try:
-                rows_inserted = self.postgres_client.insert_token_metrics_batch(
-                    df=final_df,
-                    view_source=self.view_name,
-                    batch_size=1000
-                )
-                save_duration = time.time() - save_start
-                logger.info(f'Saved {rows_inserted:,} rows to PostgreSQL in {save_duration:.2f}s')
-
-                # Refresh materialized views
                 self.postgres_client.refresh_materialized_views()
-
-                # Get statistics
                 total_count = self.postgres_client.get_metrics_count()
                 logger.info(f'Total metrics in database: {total_count:,}')
-
             except Exception as e:
-                logger.error(f'Failed to save to PostgreSQL: {e}', exc_info=True)
-                logger.warning('Results printed but not saved to database')
+                logger.error(f'Failed to refresh views: {e}', exc_info=True)
 
             logger.info('=' * 100)
+            logger.info(f'Total saved to PostgreSQL: {total_saved:,} tokens')
 
-            return len(final_df)
+            return total_saved
 
         except Exception as e:
             logger.error(f'Error processing tokens: {e}', exc_info=True)

@@ -110,6 +110,25 @@ class EvmTokenAggregationWorker:
 
         df = pl.DataFrame({"mint": [t.lower() for t in tokens]})
 
+        # Pre-populate RPC caches from PostgreSQL to skip known tokens
+        if self._postgres is None:
+            self._postgres = get_postgres_client()
+        tokens_lc = [t.lower() for t in tokens]
+        known_data = self._postgres.get_known_token_data(tokens_lc, chain=chain)
+        if known_data:
+            meta_preloaded = 0
+            for mint, d in known_data.items():
+                if mint not in self.rpc._meta_cache and (d['decimals'] is not None or d['symbol'] is not None):
+                    self.rpc._meta_cache[mint] = {
+                        'decimals': d['decimals'],
+                        'symbol': d['symbol'],
+                        'name': d['name'],
+                    }
+                    self.rpc._supply_cache.setdefault(mint, None)
+                    meta_preloaded += 1
+            if meta_preloaded:
+                logger.info(f"[{chain}] Pre-loaded {meta_preloaded} tokens from PostgreSQL (will skip RPC for these)")
+
         df_first = self.first_tx.get_first_tx_for_chunk()
         df = df.join(df_first, on="mint", how="left")
 

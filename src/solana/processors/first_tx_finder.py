@@ -17,8 +17,11 @@ class FirstTxFinder:
 
     def get_first_tx_for_chunk(self, first_swaps_data: List[Dict] = None) -> pl.DataFrame:
         """
-        Get first transaction dates for tokens using mint data + provided swap data.
-        Swap data now comes from the consolidated swap query in LiquidityAnalyzer.
+        Get first transaction dates for tokens using mint data + swap data.
+        Three sources combined:
+          1. solana.mints table (SPL Token mint transactions)
+          2. Consolidated query first_swap (last 7 days, SOL/USDC/USDT pairs only)
+          3. Direct swaps query fallback (all-time, any pair — catches Token-2022 and LST pairs)
 
         Args:
             first_swaps_data: Optional list of first swap data from consolidated query
@@ -26,55 +29,88 @@ class FirstTxFinder:
         Returns:
             Polars DataFrame with columns: mint, first_tx_date
         """
-        logger.info('Fetching first tx dates (mints from DB + swaps from consolidated query)')
+        logger.info('Fetching first tx dates (mints + consolidated swaps + direct swaps fallback)')
 
-        # Query: Get first mint date for this chunk (ONLY query to DB)
+        # Source 1: First mint date from solana.mints
         first_mints = self._get_first_mints_for_chunk()
         logger.info(f'Retrieved {len(first_mints)} first mint records')
 
-        # Use provided swap data (or empty list)
+        # Source 2: First swap from consolidated query (7-day window, SOL/STABLE pairs)
         first_swaps = first_swaps_data if first_swaps_data else []
         logger.info(f'Using {len(first_swaps)} first swap records from consolidated query')
 
-        # Convert to Polars DataFrames with explicit schema
-        if first_mints:
-            df_first_mints = pl.DataFrame(
-                first_mints,
-                schema={'mint': pl.Utf8, 'first_mint': pl.Datetime}
-            )
-        else:
-            df_first_mints = pl.DataFrame(
-                {'mint': [], 'first_mint': []},
-                schema={'mint': pl.Utf8, 'first_mint': pl.Datetime}
-            )
+        # Source 3: Direct first swap from swaps table (all-time, any pair)
+        first_swaps_direct = self._get_first_swaps_for_chunk()
+        logger.info(f'Retrieved {len(first_swaps_direct)} first swap records from direct query')
 
-        if first_swaps:
-            df_first_swaps = pl.DataFrame(
-                first_swaps,
-                schema={'token': pl.Utf8, 'first_swap': pl.Datetime}
-            )
-        else:
-            df_first_swaps = pl.DataFrame(
-                {'token': [], 'first_swap': []},
-                schema={'token': pl.Utf8, 'first_swap': pl.Datetime}
-            )
+        # Build DataFrames
+        df_first_mints = pl.DataFrame(
+            first_mints if first_mints else {'mint': [], 'first_mint': []},
+            schema={'mint': pl.Utf8, 'first_mint': pl.Datetime}
+        )
 
-        # Rename token column to mint for consistency (always, even if empty)
-        df_first_swaps = df_first_swaps.rename({'token': 'mint'})
+        df_first_swaps = pl.DataFrame(
+            first_swaps if first_swaps else {'token': [], 'first_swap': []},
+            schema={'token': pl.Utf8, 'first_swap': pl.Datetime}
+        ).rename({'token': 'mint'})
 
-        # Join first tx dates
-        df_chunk = df_first_mints.join(df_first_swaps, on='mint', how='outer')
+        df_first_swaps_direct = pl.DataFrame(
+            first_swaps_direct if first_swaps_direct else {'mint': [], 'first_swap_direct': []},
+            schema={'mint': pl.Utf8, 'first_swap_direct': pl.Datetime}
+        )
 
-        # Calculate earliest date between mint and swap
+        # Join all three sources — coalesce mint after each outer join
+        df_chunk = df_first_mints.join(df_first_swaps, on='mint', how='outer', coalesce=True)
+        df_chunk = df_chunk.join(df_first_swaps_direct, on='mint', how='outer', coalesce=True)
+
+        # Calculate earliest date across all sources
         df_chunk = df_chunk.with_columns([
-            pl.min_horizontal(['first_mint', 'first_swap']).alias('first_tx_date')
+            pl.min_horizontal(['first_mint', 'first_swap', 'first_swap_direct']).alias('first_tx_date')
         ])
 
-        # Keep only mint and first_tx_date columns
         df_chunk = df_chunk.select(['mint', 'first_tx_date'])
 
         logger.info(f'First tx dates fetched and processed for {len(df_chunk)} tokens')
         return df_chunk
+
+    def _get_first_swaps_for_chunk(self) -> List[Dict]:
+        """
+        Query first swap dates for tokens in chunk_tokens table.
+        Scans ALL time and ANY pair (not limited to SOL/USDC/USDT).
+        Catches Token-2022 tokens missing from solana.mints and tokens
+        trading only against LSTs or other non-standard pairs.
+        """
+        temp_db = Config.CLICKHOUSE_TEMP_DATABASE
+        query = f"""
+        SELECT token, MIN(first_swap) AS first_swap_direct
+        FROM (
+            SELECT base_coin AS token, MIN(block_time) AS first_swap
+            FROM solana.swaps
+            WHERE base_coin IN (SELECT mint FROM {temp_db}.chunk_tokens)
+            GROUP BY base_coin
+            UNION ALL
+            SELECT quote_coin AS token, MIN(block_time) AS first_swap
+            FROM solana.swaps
+            WHERE quote_coin IN (SELECT mint FROM {temp_db}.chunk_tokens)
+            GROUP BY quote_coin
+        )
+        GROUP BY token
+        """
+
+        try:
+            result = self.db_client.execute_query_dict(query)
+            decoded = []
+            for row in result:
+                mint_value = row['token']
+                if isinstance(mint_value, bytes):
+                    mint_str = mint_value.decode('utf-8').rstrip('\x00')
+                else:
+                    mint_str = str(mint_value).rstrip('\x00')
+                decoded.append({'mint': mint_str, 'first_swap_direct': row['first_swap_direct']})
+            return decoded
+        except Exception as e:
+            logger.error(f'Failed to get first swaps (direct): {e}', exc_info=True)
+            return []
 
     def _get_first_mints_for_chunk(self) -> List[Dict]:
         """

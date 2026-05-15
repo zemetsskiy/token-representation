@@ -68,8 +68,10 @@ class PriceCalculator:
             if price_raw <= 0:
                 continue
 
-            # Get token decimals
-            token_decimals = decimals_map.get(token, 6) if decimals_map else 6
+            # Get token decimals (skip if None — token account doesn't exist on-chain)
+            token_decimals = decimals_map.get(token) if decimals_map else 6
+            if token_decimals is None:
+                continue
 
             # Determine reference decimals based on type
             if price_reference_type == 'SOL':
