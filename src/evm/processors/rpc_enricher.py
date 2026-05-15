@@ -27,13 +27,21 @@ class EvmRpcEnricher:
         out: List[Dict[str, Any]] = []
         for t in tokens_lc:
             m = self._meta_cache.get(t, {})
+            supply_int = self._supply_cache.get(t)
+            # Cast uint256 supply to float here. Some ERC20s (scam/meme) have
+            # totalSupply > 2^63, which overflows polars Int64 dtype inference
+            # at pl.DataFrame(out) construction. Downstream math divides this
+            # by 10^decimals as Float64 anyway, so we lose nothing.
             out.append({
                 "mint": t,
                 "decimals_rpc": m.get("decimals"),
                 "symbol_rpc": m.get("symbol"),
                 "name_rpc": m.get("name"),
-                "total_supply_raw": self._supply_cache.get(t),
+                "total_supply_raw": float(supply_int) if supply_int is not None else None,
             })
         return out
+
+
+
 
 
